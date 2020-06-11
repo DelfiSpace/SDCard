@@ -3,6 +3,7 @@
 	<name>SDCard</name>
 	<comment></comment>
 	<projects>
+		<project>DelfiPQcore</project>
 		<project>DSPI</project>
 		<project>DWire</project>
 	</projects>

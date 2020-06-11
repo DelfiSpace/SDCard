@@ -13,38 +13,47 @@
  *
  */
  
-#ifndef DSPI_A_H
-#define DSPI_A_H
+#ifndef DSPI_AA_H
+#define DSPI_AA_H
 
 #include <driverlib.h>
 // Device specific includes
-#if defined (__MSP432P401R__)
-    #include "inc/msp432p401r.h"
-#elif defined (__MSP432P4111__)
-    #include "inc/msp432p4111.h"
-#endif
+#include "inc/msp432p4111.h"
 
 class DSPI_A
 {
 private: 
-	/* MSP specific modules */
-	uint32_t module;
-	uint8_t modulePort;
-	uint16_t modulePins;
-	
-	/* Internal states */
-	void _initMain( void ); 
-	
-	
+    /* MSP specific modules */
+    uint32_t module;
+    uint8_t modulePort;
+    uint16_t modulePins;
+
+    /* Internal states */
+    uint8_t (*user_onTransmit)( void );
+    void (*user_onReceive)( uint8_t );
+
+    void _initMain( void );
+
+    /* stub functions to handle interrupts */
+    uint8_t _handleTransmit( void );
+    void _handleReceive(uint8_t);
+
+    /* Interrupt handlers: they are declared as friends to be accessible from outside
+       the class (the interrupt engine) but have access to member functions */
+    friend void EUSCIA1_IRQHandler_SPI( void );
+
 public:
-	DSPI_A();
-	~DSPI_A();
-	
-	void initMaster(unsigned int speed );
-	uint8_t transfer( uint8_t data );
+    DSPI_A();
+    ~DSPI_A();
+
+    void initMaster(unsigned int speed );
+    uint8_t transfer( uint8_t data );
+
+    void onTransmit(uint8_t(*islHandle)( void ));
+    void onReceive(void(*islHandle)( uint8_t ));
 
 protected:
 
 };
 
-#endif	/* DSPI_H_ */
+#endif  /* DSPI_H_ */
