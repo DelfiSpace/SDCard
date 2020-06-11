@@ -15,7 +15,7 @@
 //#include "Console.h"
 
 #define SD_INIT_FREQUENCY 100000
-#define SD_TRX_FREQUENCY  1000000
+#define SD_TRX_FREQUENCY  100000
 #define SD_CRC_ENABLED    0
 
 
@@ -262,6 +262,18 @@ public:
     void waitForReady();
     void getArray(uint8_t Buff[], int size);
     void sendDummy();
+    int sync()
+        {
+            return 0;
+        }
+    int erase(uint64_t addr, uint64_t size)
+        {
+            return 0;
+        }
+    uint64_t get_erase_size() const
+        {
+            return get_program_size();
+        }
 
 };
 

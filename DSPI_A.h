@@ -33,18 +33,8 @@ private:
 	uint16_t modulePins;
 	
 	/* Internal states */
-	uint8_t (*user_onTransmit)( void );
-	void (*user_onReceive)( uint8_t );
-	
 	void _initMain( void ); 
 	
-	/* stub functions to handle interrupts */
-	uint8_t _handleTransmit( void );
-	void _handleReceive(uint8_t);
-
-	/* Interrupt handlers: they are declared as friends to be accessible from outside
-	   the class (the interrupt engine) but have access to member functions */
-	friend void EUSCIA1_IRQHandler_SPI( void );
 	
 public:
 	DSPI_A();
@@ -52,9 +42,6 @@ public:
 	
 	void initMaster(unsigned int speed );
 	uint8_t transfer( uint8_t data );
-
-	void onTransmit(uint8_t(*islHandle)( void ));
-	void onReceive(void(*islHandle)( uint8_t ));
 
 protected:
 

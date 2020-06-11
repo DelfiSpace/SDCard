@@ -11,7 +11,7 @@
 #include "SDCard.h"
 #include <stdint.h>
 
-#define SPI_FILL_CHAR 0xff
+#define FILLER 0xff
 #define SPI_CMD(x) (0x40 | (x & 0x3f))
 #define SD_COMMAND_TIMEOUT  5000 //ms of timeout (TODO)
 #define SD_CMD0_GO_IDLE_STATE_RETRIES   10
@@ -414,12 +414,12 @@ uint8_t SDCard::_cmd_spi(SDCard::cmdSupported cmd, uint32_t arg)
     // The received byte immediataly following CMD12 is a stuff byte,
     // it should be discarded before receive the response of the CMD12.
     if (CMD12_STOP_TRANSMISSION == cmd) {
-        _spi->transfer(SPI_FILL_CHAR);
+        _spi->transfer(FILLER);
     }
 
     // Loop for response: Response is sent back within command response time (NCR), 0 to 8 bytes for SDC
     for (int i = 0; i < 0x10; i++) {
-        response = _spi->transfer(SPI_FILL_CHAR);
+        response = _spi->transfer(FILLER);
         // Got the response
         if (!(response & R1_RESPONSE_RECV)) {
             break;
@@ -495,10 +495,10 @@ int SDCard::_cmd(SDCard::cmdSupported cmd, uint32_t arg, bool isAcmd, uint32_t *
         case CMD8_SEND_IF_COND:             // Response R7
             _card_type = SDCARD_V2; // fallthrough
         case CMD58_READ_OCR:                // Response R3
-            response  = (_spi->transfer(SPI_FILL_CHAR) << 24);
-            response |= (_spi->transfer(SPI_FILL_CHAR) << 16);
-            response |= (_spi->transfer(SPI_FILL_CHAR) << 8);
-            response |= _spi->transfer(SPI_FILL_CHAR);
+            response  = (_spi->transfer(FILLER) << 24);
+            response |= (_spi->transfer(FILLER) << 16);
+            response |= (_spi->transfer(FILLER) << 8);
+            response |= _spi->transfer(FILLER);
             break;
 
         case CMD12_STOP_TRANSMISSION:       // Response R1b
@@ -507,7 +507,7 @@ int SDCard::_cmd(SDCard::cmdSupported cmd, uint32_t arg, bool isAcmd, uint32_t *
             break;
 
         case ACMD13_SD_STATUS:             // Response R2
-            response = _spi->transfer(SPI_FILL_CHAR);
+            response = _spi->transfer(FILLER);
             break;
 
         default:                            // Response R1
@@ -581,12 +581,12 @@ int SDCard::_read_bytes(uint8_t *buffer, uint32_t length)
 
     // read data
     for (uint32_t i = 0; i < length; i++) {
-        buffer[i] = _spi->transfer(SPI_FILL_CHAR);
+        buffer[i] = _spi->transfer(FILLER);
     }
 
     // Read the CRC16 checksum for the data block
-    crc = (_spi->transfer(SPI_FILL_CHAR) << 8);
-    crc |= _spi->transfer(SPI_FILL_CHAR);
+    crc = (_spi->transfer(FILLER) << 8);
+    crc |= _spi->transfer(FILLER);
 
     if (_crc_on) {
         //todo
@@ -612,12 +612,12 @@ int SDCard::_read(uint8_t *buffer, uint32_t length)
 
     // read data
     for(int p = 0; p < length; p++){
-        ((char *)buffer)[p] = _spi->transfer(SPI_FILL_CHAR);
+        ((char *)buffer)[p] = _spi->transfer(FILLER);
     }
 
     // Read the CRC16 checksum for the data block
-    crc = (_spi->transfer(SPI_FILL_CHAR) << 8);
-    crc |= _spi->transfer(SPI_FILL_CHAR);
+    crc = (_spi->transfer(FILLER) << 8);
+    crc |= _spi->transfer(FILLER);
 
     if (_crc_on) {
         //todo
@@ -657,7 +657,7 @@ uint8_t SDCard::_write(const uint8_t *buffer, uint8_t token, uint32_t length)
 
 
     // check the response token
-    response = _spi->transfer(SPI_FILL_CHAR);
+    response = _spi->transfer(FILLER);
 
     // Wait for last block to be written
     _wait_ready(SD_COMMAND_TIMEOUT);
@@ -735,7 +735,7 @@ bool SDCard::_wait_token(uint8_t token)
     //todo timeout
     int count = 0;
     do {
-        if (token == _spi->transfer(SPI_FILL_CHAR)) {
+        if (token == _spi->transfer(FILLER)) {
             //_spi_timer.stop();
             return true;
         };
@@ -751,7 +751,7 @@ bool SDCard::_wait_ready(int timeous_ms)//std::chrono::duration<uint32_t, std::m
     uint8_t response;
     int c = 0;
     do {
-        response = _spi->transfer(SPI_FILL_CHAR);
+        response = _spi->transfer(FILLER);
         if (response == 0xFF) {
             return true;
         }
@@ -763,7 +763,7 @@ bool SDCard::_wait_ready(int timeous_ms)//std::chrono::duration<uint32_t, std::m
 void SDCard::_spi_wait(uint8_t count)
 {
     for (uint8_t i = 0; i < count; ++i) {
-        _spi->transfer(SPI_FILL_CHAR);
+        _spi->transfer(FILLER);
     }
 }
 
@@ -779,16 +779,17 @@ void SDCard::sendDummy(){
     //        while (!(MAP_SPI_getInterruptStatus(EUSCI_A1_SPI_BASE, EUSCI_A_SPI_TRANSMIT_INTERRUPT )));
     //        MAP_SPI_transmitData(EUSCI_A1_SPI_BASE, 0xff);//Write FF for HIGH DI (10 times = 80 cycles)
     //        while (!(MAP_SPI_getInterruptStatus(EUSCI_A1_SPI_BASE, EUSCI_A_SPI_RECEIVE_INTERRUPT )));
-        _spi->transfer(0xff);
+        _spi->transfer(FILLER);
     }
 }
 void SDCard::select(){
-    _spi->transfer(SPI_FILL_CHAR);
+    _spi->transfer(FILLER);
+    _spi->transfer(FILLER);
     MAP_GPIO_setOutputLowOnPin( CS_PORT, CS_PIN );
 }
 
 void SDCard::unselect(){
-    _spi->transfer(SPI_FILL_CHAR);
+    _spi->transfer(FILLER);
     MAP_GPIO_setOutputHighOnPin( CS_PORT, CS_PIN );
 }
 
@@ -807,7 +808,7 @@ uint8_t SDCard::sendCmd(uint8_t cmdNumber, uint32_t payload){
 
     uint8_t R1;
     do {
-        R1 = _spi->transfer(0xff);
+        R1 = _spi->transfer(FILLER);
     } while ((R1 & 0x80) != 0);
 
     return R1;
@@ -816,7 +817,7 @@ uint8_t SDCard::sendCmd(uint8_t cmdNumber, uint32_t payload){
 void SDCard::waitForReady(){
     uint8_t reply;
     do {
-        reply = _spi->transfer(0xff);
+        reply = _spi->transfer(FILLER);
     } while ((reply) != 0xff);
 }
 
