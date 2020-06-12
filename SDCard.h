@@ -15,7 +15,7 @@
 //#include "Console.h"
 
 #define SD_INIT_FREQUENCY 100000
-#define SD_TRX_FREQUENCY  100000
+#define SD_TRX_FREQUENCY  1000000
 #define SD_CRC_ENABLED    0
 
 

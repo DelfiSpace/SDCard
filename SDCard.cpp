@@ -144,11 +144,11 @@ int SDCard::init()
         return SD_BLOCK_DEVICE_ERROR_UNSUPPORTED;
     }
 
-//    // Set SCK for data transfer TODO
-//    err = _freq();
-//    if (err) {
-//        return err;
-//    }
+    // Set SCK for data transfer TODO
+    err = _freq();
+    if (err) {
+        return err;
+    }
 
 end:
     return SD_BLOCK_DEVICE_OK;
