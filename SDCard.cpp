@@ -30,11 +30,9 @@ SDCard::SDCard(DSPI_A* DSPI_in, uint32_t CS_port, uint32_t CS_pin){
     // Set default to 100kHz for initialisation and 1MHz for data transfer
     _init_sck = SD_INIT_FREQUENCY;
     _transfer_sck = SD_TRX_FREQUENCY;
-
     _erase_size = BLOCK_SIZE_HC;
     _is_initialized = 0;
     _sectors = 0;
-    _init_ref_count = 0;
 }
 
 SDCard::~SDCard()
@@ -47,7 +45,7 @@ SDCard::~SDCard()
 int SDCard::_initialise_card()
 {
     uint32_t response, arg;
-    _spi_init();
+    _spi_init(); //init SPI with low-speed and send dummy clocks
 
     // The card is transitioned from SDCard mode to SPI mode by sending the CMD0 + CS Asserted("0")
     if (_go_idle_state() != R1_IDLE_STATE) {
@@ -64,7 +62,7 @@ int SDCard::_initialise_card()
     }
 
     if (_crc_on) {
-        // Enable CRC
+        // Enable CRC TODO
         status = _cmd(CMD59_CRC_ON_OFF, _crc_on);
     }
 
@@ -126,8 +124,6 @@ int SDCard::init()
 {
     int err;
 
-    //lock(); no mutex
-
     if (_is_initialized) {
         goto end;
     }
@@ -148,11 +144,11 @@ int SDCard::init()
         return SD_BLOCK_DEVICE_ERROR_UNSUPPORTED;
     }
 
-    // Set SCK for data transfer
-    err = _freq();
-    if (err) {
-        return err;
-    }
+//    // Set SCK for data transfer TODO
+//    err = _freq();
+//    if (err) {
+//        return err;
+//    }
 
 end:
     return SD_BLOCK_DEVICE_OK;
@@ -161,15 +157,10 @@ end:
 int SDCard::deinit()
 {
     if (!_is_initialized) {
-        _init_ref_count = 0;
         goto end;
     }
 
-    _init_ref_count--;
-
-    if (_init_ref_count) {
-        goto end;
-    }
+    // Doesnt really do anything... as you can't exactly de-initialize the hardware..
 
     _is_initialized = false;
     _sectors = 0;
@@ -238,7 +229,7 @@ int SDCard::program(const void *b, uint64_t addr, uint64_t size)
          * sending 'Stop Tran' token instead of 'Start Block' token at the beginning
          * of the next block
          */
-        _spi->transfer(SPI_STOP_TRAN);
+        _cmd(CMD12_STOP_TRANSMISSION, 0x0); //_cmd(CMD12_STOP_TRANSMISSION, 0x0); //_spi->transfer(SPI_STOP_TRAN);
     }
 
     unselect();
@@ -717,7 +708,7 @@ uint64_t SDCard::_sd_sectors()
             }
             break;
 
-        case 1:
+        case 1: // this one should fire as an SDXC is used (CSD v2)
             hc_c_size = ext_bits(csd, 69, 48);            // device size : C_SIZE : [69:48]
             blocks = (hc_c_size + 1) << 10;               // block count = C_SIZE+1) * 1K byte (512B is block size)
             _erase_size = BLOCK_SIZE_HC;

@@ -83,14 +83,14 @@ int LittleFS::mount(SDCard *bd)
         _config.block_size = _block_size;
     }
     _config.block_count = bd->size() / _config.block_size;
-    _config.lookahead = 32 * ((_config.block_count + 31) / 32);
-    if (_config.lookahead > _lookahead) {
-        _config.lookahead = _lookahead;
-    }
+//    _config.lookahead = 32 * ((_config.block_count + 31) / 32);
+//    if (_config.lookahead > _lookahead) {
+//        _config.lookahead = _lookahead;
+//    }
     _config.read_buffer = readBuf;
     _config.prog_buffer = progBuf;
     _config.lookahead_buffer = lookaheadBuf;
-    _config.file_buffer = &fileBuf;
+//    _config.file_buffer = &fileBuf;
 
     err = lfs_mount(&_lfs, &_config);
     if (err) {
@@ -130,14 +130,14 @@ int LittleFS::format(lfs_size_t read_size, lfs_size_t prog_size,
         _config.block_size = _block_size;
     }
     _config.block_count = _bd->size() / _config.block_size;
-    _config.lookahead = 32 * ((_config.block_count + 31) / 32);
-    if (_config.lookahead > _lookahead) {
-        _config.lookahead = _lookahead;
-    }
+//    _config.lookahead = 32 * ((_config.block_count + 31) / 32);
+//    if (_config.lookahead > _lookahead) {
+//        _config.lookahead = _lookahead;
+//    }
     _config.read_buffer = readBuf;
     _config.prog_buffer = progBuf;
     _config.lookahead_buffer = lookaheadBuf;
-    _config.file_buffer = &fileBuf;
+//    _config.file_buffer = &fileBuf;
 
     err = lfs_format(&_lfs, &_config);
     if (err) {

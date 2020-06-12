@@ -192,8 +192,9 @@ private:
 
     uint8_t _card_type;
     int _cmd(SDCard::cmdSupported cmd, uint32_t arg, bool isAcmd = 0, uint32_t *resp = 0);
-    int _cmd8();
 
+
+    int _cmd8();
     uint32_t _go_idle_state();
     int _initialise_card();
 
