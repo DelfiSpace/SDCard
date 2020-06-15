@@ -42,7 +42,8 @@ public:
                           lfs_size_t block_size = LFS_BLOCK_SIZE,
                           lfs_size_t lookahead = LFS_LOOKAHEAD);
     ~LittleFS();
-    int format(lfs_size_t read_size = LFS_READ_SIZE,
+    int format(SDCard *sd,
+                          lfs_size_t read_size = LFS_READ_SIZE,
                           lfs_size_t prog_size = LFS_PROG_SIZE,
                           lfs_size_t block_size = LFS_BLOCK_SIZE,
                           lfs_size_t lookahead = LFS_LOOKAHEAD);

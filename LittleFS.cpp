@@ -127,9 +127,10 @@ int LittleFS::unmount()
     return res;
 }
 
-int LittleFS::format(lfs_size_t read_size, lfs_size_t prog_size,
+int LittleFS::format(SDCard *bd, lfs_size_t read_size, lfs_size_t prog_size,
                              lfs_size_t block_size, lfs_size_t lookahead)
 {
+    _bd = bd;
     int err = _bd->init();
     if (err) {
         _bd = 0;
