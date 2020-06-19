@@ -87,7 +87,7 @@ int LittleFS::mount(SDCard *bd)
     _config.block_count = bd->size() / _config.block_size;
 
     // block device configuration
-    _config.cache_size = LFS_CACHE_SIZE*_config.read_size;
+    _config.cache_size = LFS_CACHE_SIZE;
     _config.block_cycles = LFS_BLOCKCYCLES;
 
     _config.read_buffer = readBuf;
@@ -159,7 +159,7 @@ int LittleFS::format(SDCard *bd, lfs_size_t read_size, lfs_size_t prog_size,
     _config.block_count = _bd->size() / _config.block_size;
 
     // block device configuration
-    _config.cache_size = LFS_CACHE_SIZE*_config.read_size;
+    _config.cache_size = LFS_CACHE_SIZE;
     _config.block_cycles = LFS_BLOCKCYCLES;
 
     _config.read_buffer = readBuf;
