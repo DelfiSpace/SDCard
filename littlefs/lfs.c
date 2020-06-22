@@ -2399,7 +2399,9 @@ int lfs_file_opencfg(lfs_t *lfs, lfs_file_t *file,
 
     // setup simple file details
     int err;
-    file->cfg = cfg;
+    if(file->cfg == 0){
+        file->cfg = cfg;
+    }
     file->flags = flags | LFS_F_OPENED;
     file->pos = 0;
     file->off = 0;
@@ -2546,7 +2548,11 @@ int lfs_file_open(lfs_t *lfs, lfs_file_t *file,
 
 int lfs_file_close(lfs_t *lfs, lfs_file_t *file) {
     LFS_TRACE("lfs_file_close(%p, %p)", (void*)lfs, (void*)file);
-    LFS_ASSERT(file->flags & LFS_F_OPENED);
+
+    //LFS_ASSERT(file->flags & LFS_F_OPENED);
+    if(!(file->flags & LFS_F_OPENED)){
+        return LFS_ERR_NOTOPEN;
+    }
 
     int err = lfs_file_sync(lfs, file);
 
@@ -2872,7 +2878,12 @@ lfs_ssize_t lfs_file_write(lfs_t *lfs, lfs_file_t *file,
         const void *buffer, lfs_size_t size) {
     LFS_TRACE("lfs_file_write(%p, %p, %p, %"PRIu32")",
             (void*)lfs, (void*)file, buffer, size);
-    LFS_ASSERT(file->flags & LFS_F_OPENED);
+
+    //LFS_ASSERT(file->flags & LFS_F_OPENED);
+    if(!(file->flags & LFS_F_OPENED)){
+        return LFS_ERR_NOTOPEN;
+    }
+
     LFS_ASSERT((file->flags & 3) != LFS_O_RDONLY);
 
     const uint8_t *data = buffer;
@@ -3003,8 +3014,11 @@ lfs_soff_t lfs_file_seek(lfs_t *lfs, lfs_file_t *file,
         lfs_soff_t off, int whence) {
     LFS_TRACE("lfs_file_seek(%p, %p, %"PRId32", %d)",
             (void*)lfs, (void*)file, off, whence);
-    LFS_ASSERT(file->flags & LFS_F_OPENED);
 
+    //LFS_ASSERT(file->flags & LFS_F_OPENED);
+    if(!(file->flags & LFS_F_OPENED)){
+        return LFS_ERR_NOTOPEN;
+    }
     // write out everything beforehand, may be noop if rdonly
     int err = lfs_file_flush(lfs, file);
     if (err) {

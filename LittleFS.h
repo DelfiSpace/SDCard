@@ -12,12 +12,12 @@
 #include "littlefs/lfs.h"
 #include "SDCard.h"
 
-#define LFS_BLOCK_SIZE  LFS_READ_SIZE
+#define LFS_BLOCK_SIZE  1024
 #define LFS_READ_SIZE   512
 #define LFS_PROG_SIZE   512
-#define LFS_CACHE_SIZE  LFS_READ_SIZE
-#define LFS_LOOKAHEAD   128
-#define LFS_BLOCKCYCLES 500
+#define LFS_CACHE_SIZE  512
+#define LFS_LOOKAHEAD   10*8192
+#define LFS_BLOCKCYCLES -1
 
 typedef signed   int  ssize_t;  ///< Signed size type, usually encodes negative errors
 typedef unsigned int  size_t;
@@ -118,8 +118,8 @@ private:
     struct lfs_config _config;
     SDCard *_bd; // The block device
 
-    uint8_t readBuf[LFS_CACHE_SIZE];
-    uint8_t progBuf[LFS_CACHE_SIZE];
+    uint8_t readBuf[LFS_READ_SIZE];
+    uint8_t progBuf[LFS_PROG_SIZE];
     uint8_t lkahBuf[LFS_LOOKAHEAD];
 
     // default parameters
