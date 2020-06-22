@@ -38,10 +38,6 @@
 #include <stdio.h>
 #endif
 
-#ifdef __cplusplus
-extern "C"
-{
-#endif
 
 
 // Macros, may be replaced by system specific wrappers. Arguments to these
@@ -208,27 +204,21 @@ uint32_t lfs_crc(uint32_t crc, const void *buffer, size_t size);
 // Allocate memory, only used if buffers are not provided to littlefs
 // Note, memory must be 64-bit aligned
 static inline void *lfs_malloc(size_t size) {
-#ifndef LFS_NO_MALLOC
-    return malloc(size);
-#else
+//#ifndef LFS_NO_MALLOC
+//    return malloc(size);
+//#else
+//    (void)size;
+//    return NULL;
+//#endif
     (void)size;
     return NULL;
-#endif
 }
 
 // Deallocate memory, only used if buffers are not provided to littlefs
 static inline void lfs_free(void *p) {
-#ifndef LFS_NO_MALLOC
-    free(p);
-#else
     (void)p;
-#endif
 }
 
-
-#ifdef __cplusplus
-} /* extern "C" */
-#endif
 
 #endif
 #endif

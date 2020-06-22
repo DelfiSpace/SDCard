@@ -104,7 +104,7 @@
 							<option id="com.ti.ccstudio.buildDefinitions.core.OPT_CODEGEN_VERSION.168752716" name="Compiler version" superClass="com.ti.ccstudio.buildDefinitions.core.OPT_CODEGEN_VERSION" value="20.2.0.LTS" valueType="string"/>
 							<targetPlatform id="com.ti.ccstudio.buildDefinitions.MSP432_20.2.library.targetPlatformRelease.2011958910" name="Platform" superClass="com.ti.ccstudio.buildDefinitions.MSP432_20.2.library.targetPlatformRelease"/>
 							<builder buildPath="${BuildDirectory}" id="com.ti.ccstudio.buildDefinitions.MSP432_20.2.library.builderRelease.878203200" keepEnvironmentInBuildfile="false" name="GNU Make" parallelBuildOn="true" parallelizationNumber="optimal" superClass="com.ti.ccstudio.buildDefinitions.MSP432_20.2.library.builderRelease"/>
-							<tool command="&quot;${CG_TOOL_CL}&quot; --c99" id="com.ti.ccstudio.buildDefinitions.MSP432_20.2.library.compilerRelease.2059952597" name="ARM Compiler" superClass="com.ti.ccstudio.buildDefinitions.MSP432_20.2.library.compilerRelease">
+							<tool command="&quot;${CG_TOOL_CL}&quot;" id="com.ti.ccstudio.buildDefinitions.MSP432_20.2.library.compilerRelease.2059952597" name="ARM Compiler" superClass="com.ti.ccstudio.buildDefinitions.MSP432_20.2.library.compilerRelease">
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.ti.ccstudio.buildDefinitions.MSP432_20.2.compilerID.INCLUDE_PATH.35873622" name="Add dir to #include search path (--include_path, -I)" superClass="com.ti.ccstudio.buildDefinitions.MSP432_20.2.compilerID.INCLUDE_PATH" valueType="includePath">
 									<listOptionValue builtIn="false" value="${CCS_BASE_ROOT}/arm/include"/>
 									<listOptionValue builtIn="false" value="${WORKSPACE_LOC}/DWire"/>

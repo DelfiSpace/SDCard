@@ -12,7 +12,7 @@
 #include "littlefs/lfs.h"
 #include "SDCard.h"
 
-#define LFS_BLOCK_SIZE  1024
+#define LFS_BLOCK_SIZE  512
 #define LFS_READ_SIZE   512
 #define LFS_PROG_SIZE   512
 #define LFS_CACHE_SIZE  512
@@ -112,6 +112,7 @@ public:
     void dir_rewind(lfs_dir_t *dir);
 
     lfs_t _lfs; // The actual file system
+    lfs_file_t workfile;
 
 private:
 
@@ -127,6 +128,10 @@ private:
     const lfs_size_t _prog_size;
     const lfs_size_t _block_size;
     const lfs_size_t _lookahead;
+
+    //file handling object
+    uint8_t fileBuf[LFS_CACHE_SIZE];
+    const struct lfs_file_config workfile_cfg = {.buffer=fileBuf};
 };
 
 

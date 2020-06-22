@@ -45,6 +45,7 @@ LittleFS::LittleFS(SDCard *bd, lfs_size_t read_size, lfs_size_t prog_size,
     , _block_size(block_size)
     , _lookahead(lookahead)
 {
+    workfile.cfg = &workfile_cfg;
     if (bd) {
         mount(bd);
     }

@@ -10,11 +10,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#ifdef __cplusplus
-extern "C"
-{
-#endif
-
 
 /// Version info ///
 
@@ -85,6 +80,9 @@ enum lfs_error {
     LFS_ERR_NOATTR      = -61,  // No data/attr available
     LFS_ERR_NAMETOOLONG = -36,  // File name too long
     LFS_ERR_NOTOPEN     = -37,  // File/Dir not open
+    LFS_ERR_NOTFLUSHED  = -38,  // Has not been flushed
+    LFS_ERR_NOTBLOCK    = -39,  // block does not exist
+    LFS_ERR_NBIG        = -27,  // File name too large
 };
 
 // File types
@@ -327,16 +325,18 @@ typedef struct lfs_dir {
 } lfs_dir_t;
 
 // littlefs file type
+typedef struct lfs_ctz {
+    lfs_block_t head;
+    lfs_size_t size;
+} lfs_ctz_t;
+
 typedef struct lfs_file {
     struct lfs_file *next;
     uint16_t id;
     uint8_t type;
     lfs_mdir_t m;
 
-    struct lfs_ctz {
-        lfs_block_t head;
-        lfs_size_t size;
-    } ctz;
+    lfs_ctz_t ctz;
 
     uint32_t flags;
     lfs_off_t pos;
@@ -362,17 +362,19 @@ typedef struct lfs_gstate {
 } lfs_gstate_t;
 
 // The littlefs filesystem type
+typedef struct lfs_mlist {
+    struct lfs_mlist *next;
+    uint16_t id;
+    uint8_t type;
+    lfs_mdir_t m;
+} lfs_mlist_t;
+
 typedef struct lfs {
     lfs_cache_t rcache;
     lfs_cache_t pcache;
 
     lfs_block_t root[2];
-    struct lfs_mlist {
-        struct lfs_mlist *next;
-        uint16_t id;
-        uint8_t type;
-        lfs_mdir_t m;
-    } *mlist;
+    lfs_mlist_t *mlist;
     uint32_t seed;
 
     lfs_gstate_t gstate;
@@ -392,9 +394,6 @@ typedef struct lfs {
     lfs_size_t file_max;
     lfs_size_t attr_max;
 
-#ifdef LFS_MIGRATE
-    struct lfs1 *lfs1;
-#endif
 } lfs_t;
 
 
@@ -632,25 +631,5 @@ lfs_ssize_t lfs_fs_size(lfs_t *lfs);
 //
 // Returns a negative error code on failure.
 int lfs_fs_traverse(lfs_t *lfs, int (*cb)(void*, lfs_block_t), void *data);
-
-#ifdef LFS_MIGRATE
-// Attempts to migrate a previous version of littlefs
-//
-// Behaves similarly to the lfs_format function. Attempts to mount
-// the previous version of littlefs and update the filesystem so it can be
-// mounted with the current version of littlefs.
-//
-// Requires a littlefs object and config struct. This clobbers the littlefs
-// object, and does not leave the filesystem mounted. The config struct must
-// be zeroed for defaults and backwards compatibility.
-//
-// Returns a negative error code on failure.
-int lfs_migrate(lfs_t *lfs, const struct lfs_config *cfg);
-#endif
-
-
-#ifdef __cplusplus
-} /* extern "C" */
-#endif
 
 #endif
