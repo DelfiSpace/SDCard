@@ -1563,15 +1563,6 @@ static int lfs_dir_compact(lfs_t *lfs,
                     end = begin;
                 }
             }
-#ifdef LFS_MIGRATE
-        } else if (lfs->lfs1) {
-            // do not proactively relocate blocks during migrations, this
-            // can cause a number of failure states such: clobbering the
-            // v1 superblock if we relocate root, and invalidating directory
-            // pointers if we relocate the head of a directory. On top of
-            // this, relocations increase the overall complexity of
-            // lfs_migration, which is already a delicate operation.
-#endif
         } else {
             // we're writing too much, time to relocate
             tired = true;
@@ -3892,6 +3883,144 @@ int lfs_mount(lfs_t *lfs, const struct lfs_config *cfg) {
 cleanup:
     lfs_unmount(lfs);
     LFS_TRACE("lfs_mount -> %d", err);
+    return err;
+}
+
+int lfs_mount_async(lfs_t *lfs, const struct lfs_config *cfg, uint8_t* state, lfs_mdir_t* dir_iterator, lfs_block_t* cycle_iterator) {
+    int err = 0;
+    switch(*state){
+    case 0:
+        err = lfs_init(lfs, cfg);
+        if (err) {
+            LFS_TRACE("lfs_mount -> %d", err);
+            return err;
+        }
+        *dir_iterator = {.tail = {0, 1}};
+        *cycle_iterator = 0;
+        *state = 1;
+        break;
+    case 1:
+        // scan directory blocks for superblock and any global updates
+        if (!lfs_pair_isnull((*dir_iterator).tail)) {
+            if (*cycle_iterator >= lfs->cfg->block_count/2) {
+                // loop detected
+                err = LFS_ERR_CORRUPT;
+                goto cleanup;
+            }
+            *cycle_iterator += 1;
+
+            // fetch next block in tail list
+            lfs_stag_t tag = lfs_dir_fetchmatch(lfs, (dir_iterator), (*dir_iterator).tail,
+                    LFS_MKTAG(0x7ff, 0x3ff, 0),
+                    LFS_MKTAG(LFS_TYPE_SUPERBLOCK, 0, 8),
+                    NULL,
+                    lfs_dir_find_match, &(struct lfs_dir_find_match){
+                        lfs, "littlefs", 8});
+            if (tag < 0) {
+                err = tag;
+                goto cleanup;
+            }
+
+            // has superblock?
+            if (tag && !lfs_tag_isdelete(tag)) {
+                // update root
+                lfs->root[0] = (*dir_iterator).pair[0];
+                lfs->root[1] = (*dir_iterator).pair[1];
+
+                // grab superblock
+                lfs_superblock_t superblock;
+                tag = lfs_dir_get(lfs, dir_iterator, LFS_MKTAG(0x7ff, 0x3ff, 0),
+                        LFS_MKTAG(LFS_TYPE_INLINESTRUCT, 0, sizeof(superblock)),
+                        &superblock);
+                if (tag < 0) {
+                    err = tag;
+                    goto cleanup;
+                }
+                lfs_superblock_fromle32(&superblock);
+
+                // check version
+                uint16_t major_version = (0xffff & (superblock.version >> 16));
+                uint16_t minor_version = (0xffff & (superblock.version >>  0));
+                if ((major_version != LFS_DISK_VERSION_MAJOR ||
+                     minor_version > LFS_DISK_VERSION_MINOR)) {
+                    LFS_ERROR("Invalid version v%"PRIu16".%"PRIu16,
+                            major_version, minor_version);
+                    err = LFS_ERR_INVAL;
+                    goto cleanup;
+                }
+
+                // check superblock configuration
+                if (superblock.name_max) {
+                    if (superblock.name_max > lfs->name_max) {
+                        LFS_ERROR("Unsupported name_max (%"PRIu32" > %"PRIu32")",
+                                superblock.name_max, lfs->name_max);
+                        err = LFS_ERR_INVAL;
+                        goto cleanup;
+                    }
+
+                    lfs->name_max = superblock.name_max;
+                }
+
+                if (superblock.file_max) {
+                    if (superblock.file_max > lfs->file_max) {
+                        LFS_ERROR("Unsupported file_max (%"PRIu32" > %"PRIu32")",
+                                superblock.file_max, lfs->file_max);
+                        err = LFS_ERR_INVAL;
+                        goto cleanup;
+                    }
+
+                    lfs->file_max = superblock.file_max;
+                }
+
+                if (superblock.attr_max) {
+                    if (superblock.attr_max > lfs->attr_max) {
+                        LFS_ERROR("Unsupported attr_max (%"PRIu32" > %"PRIu32")",
+                                superblock.attr_max, lfs->attr_max);
+                        err = LFS_ERR_INVAL;
+                        goto cleanup;
+                    }
+
+                    lfs->attr_max = superblock.attr_max;
+                }
+            }
+
+            // has gstate?
+            err = lfs_dir_getgstate(lfs, dir_iterator, &lfs->gstate);
+            if (err) {
+                goto cleanup;
+            }
+            break;
+        }
+        *state = 2;
+        break;
+    case 2:
+        // found superblock?
+        if (lfs_pair_isnull(lfs->root)) {
+            err = LFS_ERR_INVAL;
+            goto cleanup;
+        }
+
+        // update littlefs with gstate
+        if (!lfs_gstate_iszero(&lfs->gstate)) {
+            LFS_DEBUG("Found pending gstate 0x%08"PRIx32"%08"PRIx32"%08"PRIx32,
+                    lfs->gstate.tag,
+                    lfs->gstate.pair[0],
+                    lfs->gstate.pair[1]);
+        }
+        lfs->gstate.tag += !lfs_tag_isvalid(lfs->gstate.tag);
+        lfs->gdisk = lfs->gstate;
+
+        // setup free lookahead
+        lfs_alloc_reset(lfs);
+
+        *state = 3;
+        break;
+    }
+
+    return 0;
+
+cleanup:
+    lfs_unmount(lfs);
     return err;
 }
 

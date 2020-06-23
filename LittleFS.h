@@ -11,6 +11,8 @@
 
 #include "littlefs/lfs.h"
 #include "SDCard.h"
+#include "Task.h"
+#include "Console.h"
 
 #define LFS_BLOCK_SIZE  512
 #define LFS_READ_SIZE   512
@@ -34,7 +36,7 @@ typedef struct statvfs {
      unsigned long  f_namemax;  ///< Maximum filename length
  } statvfs_t;
 
-class LittleFS {
+class LittleFS : public Task{
 public:
     LittleFS(SDCard *sd = 0,
                           lfs_size_t read_size = LFS_READ_SIZE,
@@ -49,6 +51,7 @@ public:
                           lfs_size_t lookahead = LFS_LOOKAHEAD);
 
     int mount(SDCard *bd);
+    int mount_async(SDCard *bd);
     int unmount();
 
     //Remove a file from the file system.
@@ -113,8 +116,18 @@ public:
 
     lfs_t _lfs; // The actual file system
     lfs_file_t workfile;
+    lfs_mdir_t workdir;
+    lfs_block_t workblock;
+
+    void TaskRun();
+
+    virtual bool notified();
+    bool _mounted = false;
+    int _err = 0;
 
 private:
+    uint8_t curOperation = 1; //0: idle, 1: mounting, 2: formatting, 3: writing, 4: reading
+    uint8_t curOperationState = 0;  //status used internally in the operation to allow for unrolling of while-loops.
 
     struct lfs_config _config;
     SDCard *_bd; // The block device

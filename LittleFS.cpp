@@ -34,6 +34,7 @@ static int lfs_sd_sync(const struct lfs_config *c)
     return sd->sync();
 }
 
+LittleFS* _FSstub;
 
 LittleFS::LittleFS(SDCard *bd, lfs_size_t read_size, lfs_size_t prog_size,
                                    lfs_size_t block_size, lfs_size_t lookahead)
@@ -46,14 +47,125 @@ LittleFS::LittleFS(SDCard *bd, lfs_size_t read_size, lfs_size_t prog_size,
     , _lookahead(lookahead)
 {
     workfile.cfg = &workfile_cfg;
-    if (bd) {
-        mount(bd);
-    }
+//    if (bd) {
+//        mount(bd);
+//    }
+    _FSstub = this;
+    this->userFunction = [](){_FSstub->TaskRun();};
+
 }
 
 LittleFS::~LittleFS()
 {
     //unmount();
+}
+
+bool LittleFS::notified(){
+    if(curOperation != 0){
+        return true;
+    }else{
+        return false;
+    }
+}
+
+
+void LittleFS::TaskRun(){
+//    Console::log("FileSystemTask: %d", curOperation);
+    int err = 0;
+    switch(curOperation){
+    case 1:
+        //Case 1: mounting SD Card
+        err = lfs_mount_async(&_lfs, &_config, &curOperationState, &workdir, &workblock);
+        if(err){
+            Console::log("Mounting Error: -%d", -err);
+            curOperationState = 0;
+            curOperation = 0;
+            _mounted = false;
+            _err = err;
+        }
+        if(curOperationState == 3){
+            Console::log("SD Mounted.");
+            curOperationState = 0;
+            curOperation = 0;
+            _mounted = true;
+        }
+        break;
+    case 2:
+        //Case 2: Format SD Card
+        //todo
+        break;
+    case 3:
+        //Case 3: Opening File
+        //todo
+        break;
+    case 4:
+        //Case 4: Writing File
+        //todo
+        break;
+    case 5:
+        //Case 5: Closing File
+        //todo
+        break;
+    default:
+        Console::log("Unknown Operation!");
+        curOperation = 0;
+        break;
+    }
+}
+
+
+int LittleFS::mount_async(SDCard *bd)
+{
+    _bd = bd;
+    int err = _bd->init();
+    if (err) {
+        _bd = 0;
+        return err;
+    }
+
+    memset(&_config, 0, sizeof(_config));
+    _config.context = bd;
+    _config.read  = lfs_sd_read;
+    _config.prog  = lfs_sd_prog;
+    _config.erase = lfs_sd_erase;
+    _config.sync  = lfs_sd_sync;
+
+    _config.read_size   = bd->get_read_size();
+    if (_config.read_size < _read_size) {
+        _config.read_size = _read_size;
+    }
+    _config.prog_size   = bd->get_program_size();
+    if (_config.prog_size < _prog_size) {
+        _config.prog_size = _prog_size;
+    }
+    _config.block_size  = bd->get_erase_size();
+    if (_config.block_size < _block_size) {
+        _config.block_size = _block_size;
+    }
+    _config.lookahead_size = _lookahead;
+    _config.block_count = bd->size() / _config.block_size;
+
+    // block device configuration
+    _config.cache_size = LFS_CACHE_SIZE;
+    _config.block_cycles = LFS_BLOCKCYCLES;
+
+    _config.read_buffer = readBuf;
+    _config.prog_buffer = progBuf;
+    _config.lookahead_buffer = lkahBuf;
+
+    //Initialize with 0, to avoid some random value sitting there.
+    _config.name_max = 0;
+    _config.file_max = 0;
+    _config.attr_max = 0;
+
+//    err = lfs_mount(&_lfs, &_config);
+//    if (err) {
+//        _bd = NULL;
+//        return (err);
+//    }
+    curOperation = 1; //start mounting process.
+
+    return 0;
 }
 
 int LittleFS::mount(SDCard *bd)
@@ -108,6 +220,7 @@ int LittleFS::mount(SDCard *bd)
 
     return 0;
 }
+
 
 int LittleFS::unmount()
 {

@@ -417,7 +417,7 @@ int lfs_format(lfs_t *lfs, const struct lfs_config *config);
 //
 // Returns a negative error code on failure.
 int lfs_mount(lfs_t *lfs, const struct lfs_config *config);
-
+int lfs_mount_async(lfs_t *lfs, const struct lfs_config *config, uint8_t* state, lfs_mdir_t* dir_iterator, lfs_block_t* cycle_iterator);
 // Unmounts a littlefs
 //
 // Does nothing besides releasing any allocated resources.

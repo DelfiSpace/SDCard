@@ -14,8 +14,8 @@
 #include "DSPI_A.h"
 //#include "Console.h"
 
-#define SD_INIT_FREQUENCY 100000
-#define SD_TRX_FREQUENCY  10000000
+#define SD_INIT_FREQUENCY 200000
+#define SD_TRX_FREQUENCY  20000000
 #define SD_CRC_ENABLED    0
 
 

@@ -33,6 +33,7 @@ SDCard::SDCard(DSPI_A* DSPI_in, uint32_t CS_port, uint32_t CS_pin){
     _erase_size = BLOCK_SIZE_HC;
     _is_initialized = 0;
     _sectors = 0;
+    _init_ref_count = 0;
 }
 
 SDCard::~SDCard()
