@@ -75,7 +75,7 @@ void LittleFS::TaskRun(){
     switch(curOperation){
     case 1:
         //Case 1: mounting SD Card
-        err = lfs_mount_async(&_lfs, &_config, &curOperationState, &workdir, &workblock);
+        err = lfs_mount_async(&_lfs, &_config, &curOperationState, &workdir, &workblock, true);
         if(err){
             Console::log("Mounting Error: -%d", -err);
             curOperationState = 0;
@@ -84,9 +84,9 @@ void LittleFS::TaskRun(){
             _err = err;
         }
         if(curOperationState == 3){
-            Console::log("SD Mounted.");
+            Console::log("SD Mounted.. Starting Traversing for LookaheadBuffer");
             curOperationState = 0;
-            curOperation = 0;
+            curOperation = 6;
             _mounted = true;
         }
         break;
@@ -105,6 +105,23 @@ void LittleFS::TaskRun(){
     case 5:
         //Case 5: Closing File
         //todo
+        break;
+    case 6:
+        //Case 6: Traversing Raw
+        lfs_traverse_async(&_lfs, &curOperationState, &workdir, &workblock);
+        if(err){
+            Console::log("Traversing Error: -%d", -err);
+            curOperationState = 0;
+            curOperation = 0;
+            _mounted = false;
+            _err = err;
+        }
+        if(curOperationState == 3){
+            Console::log("SD Traversed.");
+            curOperationState = 0;
+            curOperation = 6;
+            _mounted = true;
+        }
         break;
     default:
         Console::log("Unknown Operation!");

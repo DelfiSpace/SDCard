@@ -18,7 +18,7 @@
 #define LFS_READ_SIZE   512
 #define LFS_PROG_SIZE   512
 #define LFS_CACHE_SIZE  512
-#define LFS_LOOKAHEAD   10*8192
+#define LFS_LOOKAHEAD   8192 //10*8192
 #define LFS_BLOCKCYCLES -1
 
 typedef signed   int  ssize_t;  ///< Signed size type, usually encodes negative errors

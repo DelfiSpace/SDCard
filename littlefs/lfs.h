@@ -417,7 +417,7 @@ int lfs_format(lfs_t *lfs, const struct lfs_config *config);
 //
 // Returns a negative error code on failure.
 int lfs_mount(lfs_t *lfs, const struct lfs_config *config);
-int lfs_mount_async(lfs_t *lfs, const struct lfs_config *config, uint8_t* state, lfs_mdir_t* dir_iterator, lfs_block_t* cycle_iterator);
+int lfs_mount_async(lfs_t *lfs, const struct lfs_config *config, uint8_t* state, lfs_mdir_t* dir_iterator, lfs_block_t* cycle_iterator, bool findgstate = false);
 // Unmounts a littlefs
 //
 // Does nothing besides releasing any allocated resources.
@@ -631,5 +631,8 @@ lfs_ssize_t lfs_fs_size(lfs_t *lfs);
 //
 // Returns a negative error code on failure.
 int lfs_fs_traverse(lfs_t *lfs, int (*cb)(void*, lfs_block_t), void *data);
+
+//traverse all block, call after mount to speedup read/writes
+int lfs_traverse_async(lfs_t *lfs, uint8_t *state, lfs_mdir_t* dir, lfs_block_t* cycle);
 
 #endif

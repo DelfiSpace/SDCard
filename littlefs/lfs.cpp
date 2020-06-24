@@ -449,6 +449,9 @@ static int lfs_fs_relocate(lfs_t *lfs,
 int lfs_fs_traverseraw(lfs_t *lfs,
         int (*cb)(void *data, lfs_block_t block), void *data,
         bool includeorphans);
+int lfs_fs_traverseraw_async(lfs_t *lfs,
+        int (*cb)(void *data, lfs_block_t block), void *data,
+        bool includeorphans, uint8_t * state , lfs_mdir_t* dir, lfs_block_t* cycle);
 static int lfs_fs_forceconsistency(lfs_t *lfs);
 static int lfs_deinit(lfs_t *lfs);
 #ifdef LFS_MIGRATE
@@ -2549,11 +2552,8 @@ cleanup:
 
 int lfs_file_open(lfs_t *lfs, lfs_file_t *file,
         const char *path, int flags) {
-    LFS_TRACE("lfs_file_open(%p, %p, \"%s\", %x)",
-            (void*)lfs, (void*)file, path, flags);
     static const struct lfs_file_config defaults = {0};
     int err = lfs_file_opencfg(lfs, file, path, flags, &defaults);
-    LFS_TRACE("lfs_file_open -> %d", err);
     return err;
 }
 
@@ -2902,8 +2902,6 @@ lfs_ssize_t lfs_file_read(lfs_t *lfs, lfs_file_t *file,
 
 lfs_ssize_t lfs_file_write(lfs_t *lfs, lfs_file_t *file,
         const void *buffer, lfs_size_t size) {
-    LFS_TRACE("lfs_file_write(%p, %p, %p, %"PRIu32")",
-            (void*)lfs, (void*)file, buffer, size);
 
     //LFS_ASSERT(file->flags & LFS_F_OPENED);
     if(!(file->flags & LFS_F_OPENED)){
@@ -3633,9 +3631,6 @@ static int lfs_init(lfs_t *lfs, const struct lfs_config *cfg) {
     lfs->gdisk = (lfs_gstate_t){0};
     lfs->gstate = (lfs_gstate_t){0};
     lfs->gdelta = (lfs_gstate_t){0};
-#ifdef LFS_MIGRATE
-    lfs->lfs1 = NULL;
-#endif
 
     return 0;
 
@@ -3886,7 +3881,7 @@ cleanup:
     return err;
 }
 
-int lfs_mount_async(lfs_t *lfs, const struct lfs_config *cfg, uint8_t* state, lfs_mdir_t* dir_iterator, lfs_block_t* cycle_iterator) {
+int lfs_mount_async(lfs_t *lfs, const struct lfs_config *cfg, uint8_t* state, lfs_mdir_t* dir_iterator, lfs_block_t* cycle_iterator, bool FindglobalState) {
     int err = 0;
     switch(*state){
     case 0:
@@ -3981,6 +3976,12 @@ int lfs_mount_async(lfs_t *lfs, const struct lfs_config *cfg, uint8_t* state, lf
                     }
 
                     lfs->attr_max = superblock.attr_max;
+                }
+
+                if(!FindglobalState){
+                //suspend search for gstate
+                    *state = 2;
+                    break;
                 }
             }
 
@@ -4113,6 +4114,101 @@ int lfs_fs_traverseraw(lfs_t *lfs,
     }
 
     return 0;
+}
+
+int lfs_fs_traverseraw_async(lfs_t *lfs,
+        int (*cb)(void *data, lfs_block_t block), void *data,
+        bool includeorphans, uint8_t* state, lfs_mdir_t* dir, lfs_block_t* cycle) {
+    // iterate over metadata pairs
+    int err = 0;
+    switch(*state){
+    case 0:
+        *dir = {.tail = {0, 1}};
+        *cycle = 0;
+        *state = 1;
+        break;
+    case 1:
+        if(!lfs_pair_isnull((*dir).tail)) {
+            if ((*cycle) >= lfs->cfg->block_count/2) {
+                // loop detected
+                return LFS_ERR_CORRUPT;
+            }
+            *cycle += 1;
+
+            for (int i = 0; i < 2; i++) {
+                err = cb(data, (*dir).tail[i]);
+                if (err) {
+                    return err;
+                }
+            }
+
+            // iterate through ids in directory
+            err = lfs_dir_fetch(lfs, dir, (*dir).tail);
+            if (err) {
+                return err;
+            }
+
+            for (uint16_t id = 0; id < (*dir).count; id++) {
+                struct lfs_ctz ctz;
+                lfs_stag_t tag = lfs_dir_get(lfs, dir, LFS_MKTAG(0x700, 0x3ff, 0),
+                        LFS_MKTAG(LFS_TYPE_STRUCT, id, sizeof(ctz)), &ctz);
+                if (tag < 0) {
+                    if (tag == LFS_ERR_NOENT) {
+                        continue;
+                    }
+                    return tag;
+                }
+                lfs_ctz_fromle32(&ctz);
+
+                if (lfs_tag_type3(tag) == LFS_TYPE_CTZSTRUCT) {
+                    err = lfs_ctz_traverse(lfs, NULL, &lfs->rcache,
+                            ctz.head, ctz.size, cb, data);
+                    if (err) {
+                        return err;
+                    }
+                } else if (includeorphans &&
+                        lfs_tag_type3(tag) == LFS_TYPE_DIRSTRUCT) {
+                    for (int i = 0; i < 2; i++) {
+                        err = cb(data, (&ctz.head)[i]);
+                        if (err) {
+                            return err;
+                        }
+                    }
+                }
+            }
+        }else{
+            *state = 2;
+        }
+        break;
+    case 2:
+        // iterate over any open files
+        for (lfs_file_t *f = (lfs_file_t*)lfs->mlist; f; f = f->next) {
+            if (f->type != LFS_TYPE_REG) {
+                continue;
+            }
+
+            if ((f->flags & LFS_F_DIRTY) && !(f->flags & LFS_F_INLINE)) {
+                err = lfs_ctz_traverse(lfs, &f->cache, &lfs->rcache,
+                        f->ctz.head, f->ctz.size, cb, data);
+                if (err) {
+                    return err;
+                }
+            }
+
+            if ((f->flags & LFS_F_WRITING) && !(f->flags & LFS_F_INLINE)) {
+                err = lfs_ctz_traverse(lfs, &f->cache, &lfs->rcache,
+                        f->block, f->pos, cb, data);
+                if (err) {
+                    return err;
+                }
+            }
+        }
+        *state = 3;
+        break;
+    case 3:
+        return err;
+    }
+    return err;
 }
 
 int lfs_fs_traverse(lfs_t *lfs,
@@ -4440,7 +4536,6 @@ static int lfs_fs_size_count(void *p, lfs_block_t block) {
 }
 
 lfs_ssize_t lfs_fs_size(lfs_t *lfs) {
-    LFS_TRACE("lfs_fs_size(%p)", (void*)lfs);
     lfs_size_t size = 0;
     int err = lfs_fs_traverseraw(lfs, lfs_fs_size_count, &size, false);
     if (err) {
@@ -4450,4 +4545,21 @@ lfs_ssize_t lfs_fs_size(lfs_t *lfs) {
 
     LFS_TRACE("lfs_fs_size -> %d", err);
     return size;
+}
+
+int lfs_traverse_async(lfs_t *lfs, uint8_t *state, lfs_mdir_t* dir, lfs_block_t* cycle){
+    if(*state == 1){
+        lfs->free.off = (lfs->free.off + lfs->free.size)
+                % lfs->cfg->block_count;
+        lfs->free.size = lfs_min(8*lfs->cfg->lookahead_size, lfs->free.ack);
+        lfs->free.i = 0;
+        // find mask of free blocks from tree
+        memset(lfs->free.buffer, 0, lfs->cfg->lookahead_size);
+    }
+    int err = lfs_fs_traverseraw_async(lfs, lfs_alloc_lookahead, lfs, true, state , dir, cycle);
+    if (err) {
+        lfs_alloc_reset(lfs);
+        return err;
+    }
+    return 0;
 }
