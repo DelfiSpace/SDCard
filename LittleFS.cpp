@@ -361,13 +361,23 @@ int LittleFS::statvfs(const char *name, statvfs_t *st)
 ////// File operations //////
 int LittleFS::file_open(lfs_file_t *file, const char *path, int flags)
 {
-    int err = lfs_file_open(&_lfs, file, path, flags);
+    int err = 0;
+    if (file->flags & LFS_F_OPENED) {
+        err = LFS_ERR_OPEN;
+    }else{
+        err = lfs_file_open(&_lfs, file, path, flags);
+    }
     return err;
 }
 
 int LittleFS::file_close(lfs_file_t *file)
 {
-    int err = lfs_file_close(&_lfs, file);
+    int err = 0;
+    if (!(file->flags & LFS_F_OPENED)) {
+        err = LFS_ERR_NOTOPEN;
+    }else{
+        err = lfs_file_close(&_lfs, file);
+    }
     return (err);
 }
 

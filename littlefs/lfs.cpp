@@ -2394,10 +2394,6 @@ static int lfs_ctz_traverse(lfs_t *lfs,
 int lfs_file_opencfg(lfs_t *lfs, lfs_file_t *file,
         const char *path, int flags,
         const struct lfs_file_config *cfg) {
-    LFS_TRACE("lfs_file_opencfg(%p, %p, \"%s\", %x, %p {"
-                 ".buffer=%p, .attrs=%p, .attr_count=%"PRIu32"})",
-            (void*)lfs, (void*)file, path, flags,
-            (void*)cfg, cfg->buffer, (void*)cfg->attrs, cfg->attr_count);
 
     // deorphan if we haven't yet, needed at most once after poweron
     if ((flags & 3) != LFS_O_RDONLY) {

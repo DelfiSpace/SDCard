@@ -80,6 +80,7 @@ enum lfs_error {
     LFS_ERR_NOATTR      = -61,  // No data/attr available
     LFS_ERR_NAMETOOLONG = -36,  // File name too long
     LFS_ERR_NOTOPEN     = -37,  // File/Dir not open
+    LFS_ERR_OPEN        = -40,  // File/Dir already open
     LFS_ERR_NOTFLUSHED  = -38,  // Has not been flushed
     LFS_ERR_NOTBLOCK    = -39,  // block does not exist
     LFS_ERR_NBIG        = -27,  // File name too large
