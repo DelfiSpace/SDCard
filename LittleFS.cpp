@@ -118,7 +118,7 @@ void LittleFS::TaskRun(){
         break;
     case 4:
         //Case 4 5 6: Open Write Close
-//        Console::log("OpenState: %d", asyncBuffer.operationState);
+        Console::log("OpenState: %d", asyncBuffer.operationState);
         err = lfs_file_open_async(&_lfs, &workfile, &asyncBuffer);
         if(err){
             Console::log("Opening Error: -%d", -err);
@@ -127,7 +127,7 @@ void LittleFS::TaskRun(){
             _err = err;
         }
         if(asyncBuffer._operationComplete){
-//            Console::log("File Opened.");
+            Console::log("Opened.");
             asyncBuffer.operationState = 0;
             curOperation = 5;
             asyncBuffer._operationComplete = false;
@@ -136,14 +136,19 @@ void LittleFS::TaskRun(){
         break;
     case 5:
         //Case 4 5 6: Open Write Close
-        err = file_write(&workfile, writeBuffer, writeSize);
+        Console::log("WriteState: %d", asyncBuffer.operationState);
+        err = lfs_file_write_async(&_lfs, &workfile, writeBuffer, writeSize, &asyncBuffer);
         if(err < 0){
             Console::log("Writing Error: -%d", -err);
             asyncBuffer.operationState = 0;
             curOperation = 0;
             _err = err;
-        }else{
+        }
+        if(asyncBuffer._operationComplete){
+            Console::log("Written.");
+            asyncBuffer.operationState = 0;
             curOperation = 6;
+            asyncBuffer._operationComplete = false;
         }
         break;
     case 6:

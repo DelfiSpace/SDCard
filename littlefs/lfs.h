@@ -624,7 +624,7 @@ struct lfs_workbuffer {
     int32_t workint0 = 0;
     int32_t workint1 = 0;
     int32_t workint2 = 0;
-    int32_t workint3 = 0;
+    uint32_t workuint0 = 0;
     int32_t workflags = 0;
     uint8_t workpathpointer = 0;
     bool _operationComplete = false;
@@ -656,5 +656,8 @@ int lfs_file_open_async(lfs_t *lfs, lfs_file_t *file,
 // Returns a negative error code on failure.
 int lfs_file_opencfg_async(lfs_t *lfs, lfs_file_t *file,
         const char *path, lfs_workbuffer* workbuf);
+
+lfs_ssize_t lfs_file_write_async(lfs_t *lfs, lfs_file_t *file,
+        const void *buffer, lfs_size_t size, lfs_workbuffer* workbuf);
 
 #endif
