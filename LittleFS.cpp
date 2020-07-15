@@ -5,6 +5,7 @@
  *      Author: Casper
  */
 #include "LittleFS.h"
+#include <stdio.h>
 #include <string.h>
 
 ////// Block device operations //////
@@ -47,6 +48,8 @@ LittleFS::LittleFS(SDCard *bd, lfs_size_t read_size, lfs_size_t prog_size,
     , _lookahead(lookahead)
 {
     workfile.cfg = &workfile_cfg;
+    asyncBuffer._lfs = &_lfs;
+    asyncBuffer.workfile = &workfile;
 //    if (bd) {
 //        mount(bd);
 //    }
@@ -75,18 +78,19 @@ void LittleFS::TaskRun(){
     switch(curOperation){
     case 1:
         //Case 1: mounting SD Card
-        err = lfs_mount_async(&_lfs, &_config, &curOperationState, &workdir, &workblock, true);
+        err = lfs_mount_async(&_lfs, &_config, &asyncBuffer);
         if(err){
             Console::log("Mounting Error: -%d", -err);
-            curOperationState = 0;
+            asyncBuffer.operationState = 0;
             curOperation = 0;
             _mounted = false;
             _err = err;
         }
-        if(curOperationState == 3){
-            Console::log("SD Mounted.. Starting Traversing for LookaheadBuffer");
-            curOperationState = 0;
-            curOperation = 6;
+        if(asyncBuffer._operationComplete){
+            Console::log("SD Mounted and lookahead populated..");
+            asyncBuffer.operationState = 0;
+            curOperation = 0;
+            asyncBuffer._operationComplete = false;
             _mounted = true;
         }
         break;
@@ -96,31 +100,62 @@ void LittleFS::TaskRun(){
         break;
     case 3:
         //Case 3: Opening File
-        //todo
-        break;
-    case 4:
-        //Case 4: Writing File
-        //todo
-        break;
-    case 5:
-        //Case 5: Closing File
-        //todo
-        break;
-    case 6:
-        //Case 6: Traversing Raw
-        lfs_traverse_async(&_lfs, &curOperationState, &workdir, &workblock);
+//        Console::log("OpenState: %d", asyncBuffer.operationState);
+        err = lfs_file_open_async(&_lfs, &workfile, &asyncBuffer);
         if(err){
-            Console::log("Traversing Error: -%d", -err);
-            curOperationState = 0;
+            Console::log("Opening Error: -%d", -err);
+            asyncBuffer.operationState = 0;
             curOperation = 0;
-            _mounted = false;
             _err = err;
         }
-        if(curOperationState == 3){
-            Console::log("SD Traversed.");
-            curOperationState = 0;
+        if(asyncBuffer._operationComplete){
+            Console::log("File Opened.");
+            asyncBuffer.operationState = 0;
+            curOperation = 0;
+            asyncBuffer._operationComplete = false;
+            _opened = true;
+        }
+        break;
+    case 4:
+        //Case 4 5 6: Open Write Close
+//        Console::log("OpenState: %d", asyncBuffer.operationState);
+        err = lfs_file_open_async(&_lfs, &workfile, &asyncBuffer);
+        if(err){
+            Console::log("Opening Error: -%d", -err);
+            asyncBuffer.operationState = 0;
+            curOperation = 0;
+            _err = err;
+        }
+        if(asyncBuffer._operationComplete){
+//            Console::log("File Opened.");
+            asyncBuffer.operationState = 0;
+            curOperation = 5;
+            asyncBuffer._operationComplete = false;
+            _opened = true;
+        }
+        break;
+    case 5:
+        //Case 4 5 6: Open Write Close
+        err = file_write(&workfile, writeBuffer, writeSize);
+        if(err < 0){
+            Console::log("Writing Error: -%d", -err);
+            asyncBuffer.operationState = 0;
+            curOperation = 0;
+            _err = err;
+        }else{
             curOperation = 6;
-            _mounted = true;
+        }
+        break;
+    case 6:
+        err = file_close(&workfile);
+        if(err){
+            Console::log("Close Error: -%d", -err);
+            asyncBuffer.operationState = 0;
+            curOperation = 0;
+            _err = err;
+        }else{
+            curOperation = 0;
+            Console::log("OWC Succes!");
         }
         break;
     default:
@@ -130,6 +165,9 @@ void LittleFS::TaskRun(){
     }
 }
 
+bool LittleFS::isBusy(){
+    return (curOperation) != 0;
+}
 
 int LittleFS::mount_async(SDCard *bd)
 {
@@ -358,16 +396,48 @@ int LittleFS::statvfs(const char *name, statvfs_t *st)
     return 0;
 }
 
-////// File operations //////
-int LittleFS::file_open(lfs_file_t *file, const char *path, int flags)
+
+int LittleFS::file_open_async(char *path, int flags)
 {
-    int err = 0;
-    if (file->flags & LFS_F_OPENED) {
-        err = LFS_ERR_OPEN;
-    }else{
-        err = lfs_file_open(&_lfs, file, path, flags);
+    if (workfile.flags & LFS_F_OPENED) {
+        return LFS_ERR_OPEN;
     }
-    return err;
+    if(_mounted){
+        curOperation = 3; //open routine
+        asyncBuffer.operationState = 0;
+        snprintf(asyncBuffer.workpath, sizeof(asyncBuffer.workpath), "%s", path);
+        Console::log("new WorkPath: %s", asyncBuffer.workpath);
+        asyncBuffer.workflags = flags;
+        asyncBuffer.workint0 = 0;
+        return 0;
+    }else{
+        return -1;
+    }
+}
+
+int LittleFS::file_open_write_close_async(char *path, int flags, const void *buffer, size_t size)
+{
+    if (workfile.flags & LFS_F_OPENED) {
+        return LFS_ERR_OPEN;
+    }
+    if(_mounted){
+        curOperation = 4; //open/write/close routine
+        asyncBuffer.operationState = 0;
+        snprintf(asyncBuffer.workpath, sizeof(asyncBuffer.workpath), "%s", path);
+//        Console::log("new WorkPath: %s", asyncBuffer.workpath);
+        asyncBuffer.workflags = flags;
+        asyncBuffer.workint0 = 0;
+
+        writeSize = size;
+        //copy data to writebuffer
+        for(int i = 0; i < writeSize; i++){
+            writeBuffer[i] = ((uint8_t*) buffer)[i];
+        }
+
+        return 0;
+    }else{
+        return -1;
+    }
 }
 
 int LittleFS::file_close(lfs_file_t *file)
@@ -378,6 +448,7 @@ int LittleFS::file_close(lfs_file_t *file)
     }else{
         err = lfs_file_close(&_lfs, file);
     }
+    _opened = false;
     return (err);
 }
 

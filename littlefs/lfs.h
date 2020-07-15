@@ -418,7 +418,7 @@ int lfs_format(lfs_t *lfs, const struct lfs_config *config);
 //
 // Returns a negative error code on failure.
 int lfs_mount(lfs_t *lfs, const struct lfs_config *config);
-int lfs_mount_async(lfs_t *lfs, const struct lfs_config *config, uint8_t* state, lfs_mdir_t* dir_iterator, lfs_block_t* cycle_iterator, bool findgstate = false);
+
 // Unmounts a littlefs
 //
 // Does nothing besides releasing any allocated resources.
@@ -481,29 +481,10 @@ int lfs_removeattr(lfs_t *lfs, const char *path, uint8_t type);
 
 
 /// File operations ///
+// operations on 32-bit entry tags
+typedef uint32_t lfs_tag_t;
+typedef int32_t lfs_stag_t;
 
-// Open a file
-//
-// The mode that the file is opened in is determined by the flags, which
-// are values from the enum lfs_open_flags that are bitwise-ored together.
-//
-// Returns a negative error code on failure.
-int lfs_file_open(lfs_t *lfs, lfs_file_t *file,
-        const char *path, int flags);
-
-// Open a file with extra configuration
-//
-// The mode that the file is opened in is determined by the flags, which
-// are values from the enum lfs_open_flags that are bitwise-ored together.
-//
-// The config struct provides additional config options per file as described
-// above. The config struct must be allocated while the file is open, and the
-// config struct must be zeroed for defaults and backwards compatibility.
-//
-// Returns a negative error code on failure.
-int lfs_file_opencfg(lfs_t *lfs, lfs_file_t *file,
-        const char *path, int flags,
-        const struct lfs_file_config *config);
 
 // Close a file
 //
@@ -633,7 +614,47 @@ lfs_ssize_t lfs_fs_size(lfs_t *lfs);
 // Returns a negative error code on failure.
 int lfs_fs_traverse(lfs_t *lfs, int (*cb)(void*, lfs_block_t), void *data);
 
-//traverse all block, call after mount to speedup read/writes
+// Working Buffer variables to allow Async Operation
+struct lfs_workbuffer {
+    lfs_t *_lfs; // The actual file system
+    lfs_file_t *workfile;
+    lfs_mdir_t workdir;
+    lfs_block_t workblock;
+    char workpath[64];
+    int32_t workint0 = 0;
+    int32_t workint1 = 0;
+    int32_t workint2 = 0;
+    int32_t workint3 = 0;
+    int32_t workflags = 0;
+    uint8_t workpathpointer = 0;
+    bool _operationComplete = false;
+    uint8_t operationState = 0;
+};
+
+//mounts filesystem and traverses entire tree to load gstate AND occupy lookahead
+int lfs_mount_async(lfs_t *lfs, const struct lfs_config *config, lfs_workbuffer* workbuf);
 int lfs_traverse_async(lfs_t *lfs, uint8_t *state, lfs_mdir_t* dir, lfs_block_t* cycle);
+
+// Open a file
+//
+// The mode that the file is opened in is determined by the flags, which
+// are values from the enum lfs_open_flags that are bitwise-ored together.
+//
+// Returns a negative error code on failure.
+int lfs_file_open_async(lfs_t *lfs, lfs_file_t *file,
+        lfs_workbuffer * workbuf);
+
+// Open a file with extra configuration
+//
+// The mode that the file is opened in is determined by the flags, which
+// are values from the enum lfs_open_flags that are bitwise-ored together.
+//
+// The config struct provides additional config options per file as described
+// above. The config struct must be allocated while the file is open, and the
+// config struct must be zeroed for defaults and backwards compatibility.
+//
+// Returns a negative error code on failure.
+int lfs_file_opencfg_async(lfs_t *lfs, lfs_file_t *file,
+        const char *path, lfs_workbuffer* workbuf);
 
 #endif

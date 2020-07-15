@@ -70,7 +70,7 @@ public:
     int statvfs(const char *path, struct statvfs *buf);
 
     // Open a file on the file system.
-    int file_open(lfs_file_t *file, const char *path, int flags);
+    int file_open_async(char *path, int flags);
 
     // Close a file
     int file_close(lfs_file_t *file);
@@ -115,20 +115,25 @@ public:
     void dir_rewind(lfs_dir_t *dir);
 
     lfs_t _lfs; // The actual file system
-    lfs_file_t workfile;
-    lfs_mdir_t workdir;
-    lfs_block_t workblock;
+    lfs_file_t workfile; //filebuffer
+    lfs_workbuffer asyncBuffer;
+
+    uint8_t writeBuffer[1024]; //twoblock writeBuffer;
+    int writeSize; //number of bytes to write.
+
+    bool isBusy();
+    int file_open_write_close_async(char *path, int flags, const void *buffer, size_t size);
 
     void TaskRun();
 
     virtual bool notified();
     bool _mounted = false;
+    bool _opened = false;
     int _err = 0;
 
-private:
-    uint8_t curOperation = 1; //0: idle, 1: mounting, 2: formatting, 3: writing, 4: reading
-    uint8_t curOperationState = 0;  //status used internally in the operation to allow for unrolling of while-loops.
+    uint8_t curOperation = 0; //0: idle, 1: mounting, 2: formatting, 3: writing, 4: reading
 
+private:
     struct lfs_config _config;
     SDCard *_bd; // The block device
 

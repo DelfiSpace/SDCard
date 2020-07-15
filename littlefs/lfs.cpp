@@ -290,9 +290,6 @@ static inline void lfs_pair_tole32(lfs_block_t pair[2]) {
     pair[1] = lfs_tole32(pair[1]);
 }
 
-// operations on 32-bit entry tags
-typedef uint32_t lfs_tag_t;
-typedef int32_t lfs_stag_t;
 
 #define LFS_MKTAG(type, id, size) \
     (((lfs_tag_t)(type) << 20) | ((lfs_tag_t)(id) << 10) | (lfs_tag_t)(size))
@@ -1139,6 +1136,8 @@ nextname:
         const char *suffix = name + namelen;
         lfs_size_t sufflen;
         int depth = 1;
+
+        //calculates folder depth, but not really used?
         while (true) {
             suffix += strspn(suffix, "/");
             sufflen = strcspn(suffix, "/");
@@ -1206,6 +1205,121 @@ nextname:
 
         // to next name
         name += namelen;
+    }
+}
+
+static lfs_stag_t lfs_dir_find_async(lfs_t *lfs, lfs_mdir_t *dir,
+        char **path, uint8_t *pathpointer, uint16_t *id, uint8_t *workstate, lfs_stag_t *worktag) {
+    // we reduce path to a single name if we can find it
+    switch(*workstate){
+    case 0:
+
+        if (id) {
+            *id = 0x3ff;
+        }
+
+        // default to root dir
+        *worktag = LFS_MKTAG(LFS_TYPE_DIR, 0x3ff, 0);
+        dir->tail[0] = lfs->root[0];
+        dir->tail[1] = lfs->root[1];
+        *pathpointer = 0;
+        *workstate = 1;
+        break;
+
+    case 1:
+        char *name = *path + *pathpointer;
+    nextname:
+        // skip slashes
+        name += strspn(name, "/");
+        lfs_size_t namelen = strcspn(name, "/");
+
+        // skip '.' and root '..'
+        if ((namelen == 1 && memcmp(name, ".", 1) == 0) ||
+            (namelen == 2 && memcmp(name, "..", 2) == 0)) {
+            name += namelen;
+            goto nextname;
+        }
+
+        // skip if matched by '..' in name
+        char *suffix = name + namelen;
+        lfs_size_t sufflen;
+        int depth = 1;
+
+        //cleanup name
+        while (true) {
+            suffix += strspn(suffix, "/");
+            sufflen = strcspn(suffix, "/");
+            if (sufflen == 0) {
+                break;
+            }
+
+            if (sufflen == 2 && memcmp(suffix, "..", 2) == 0) {
+                depth -= 1;
+                if (depth == 0) {
+                    name = suffix + sufflen;
+                    goto nextname;
+                }
+            } else {
+                depth += 1;
+            }
+
+            suffix += sufflen;
+        }
+
+        // found path (root)
+        if (name[0] == '\0') {
+            *workstate = 3;
+            return *worktag;
+        }
+
+        // update what we've found so far
+        *path = name;
+
+        // only continue if we hit a directory
+        if (lfs_tag_type3(*worktag) != LFS_TYPE_DIR) {
+            return LFS_ERR_NOTDIR;
+        }
+
+        // grab the entry data
+        if (lfs_tag_id(*worktag) != 0x3ff) {
+            lfs_stag_t res = lfs_dir_get(lfs, dir, LFS_MKTAG(0x700, 0x3ff, 0),
+                    LFS_MKTAG(LFS_TYPE_STRUCT, lfs_tag_id(*worktag), 8), dir->tail);
+            if (res < 0) {
+                return res;
+            }
+            lfs_pair_fromle32(dir->tail);
+        }
+
+        // to next name
+        *pathpointer = namelen;
+        *workstate = 2; //advance to finding entry
+//        break;
+
+    case 2:
+        // find entry matching name
+            *worktag = lfs_dir_fetchmatch(lfs, dir, dir->tail,
+                    LFS_MKTAG(0x780, 0, 0),
+                    LFS_MKTAG(LFS_TYPE_NAME, 0, *pathpointer),
+                     // are we last name?
+                    (strchr(*path, '/') == NULL) ? id : NULL,
+                    lfs_dir_find_match, &(struct lfs_dir_find_match){
+                        lfs, *path, *pathpointer});
+            if (*worktag < 0) {
+                return *worktag;
+            }
+
+            if (*worktag) {
+                *workstate = 1; //tag found, go back to name tracking finding
+                break;
+            }
+
+            if (!dir->split) {
+                *workstate = 3;
+                return LFS_ERR_NOENT;
+            }
+
+        //if worktag = 0, we remain in case 2
+        break;
     }
 }
 
@@ -2391,148 +2505,172 @@ static int lfs_ctz_traverse(lfs_t *lfs,
 
 
 /// Top level file operations ///
-int lfs_file_opencfg(lfs_t *lfs, lfs_file_t *file,
-        const char *path, int flags,
-        const struct lfs_file_config *cfg) {
+int lfs_file_opencfg_async(lfs_t *lfs, lfs_file_t *file,
+        lfs_workbuffer * workbuf) {
 
-    // deorphan if we haven't yet, needed at most once after poweron
-    if ((flags & 3) != LFS_O_RDONLY) {
-        int err = lfs_fs_forceconsistency(lfs);
-        if (err) {
-            LFS_TRACE("lfs_file_opencfg -> %d", err);
-            return err;
-        }
-    }
+    char *path = workbuf->workpath;
+    uint8_t *pathpointer = &workbuf->workpathpointer;
+    int flags = workbuf->workflags;
+    uint8_t * state = &workbuf->operationState;
+    lfs_stag_t *worktag = &workbuf->workint0;
 
-    // setup simple file details
     int err;
-    if(file->cfg == 0){
-        file->cfg = cfg;
-    }
-    file->flags = flags | LFS_F_OPENED;
-    file->pos = 0;
-    file->off = 0;
-    file->cache.buffer = NULL;
 
-    // allocate entry for file if it doesn't exist
-    lfs_stag_t tag = lfs_dir_find(lfs, &file->m, &path, &file->id);
-    if (tag < 0 && !(tag == LFS_ERR_NOENT && file->id != 0x3ff)) {
-        err = tag;
-        goto cleanup;
-    }
-
-    // get id, add to list of mdirs to catch update changes
-    file->type = LFS_TYPE_REG;
-    file->next = (lfs_file_t*)lfs->mlist;
-    lfs->mlist = (struct lfs_mlist*)file;
-
-    if (tag == LFS_ERR_NOENT) {
-        if (!(flags & LFS_O_CREAT)) {
-            err = LFS_ERR_NOENT;
-            goto cleanup;
-        }
-
-        // check that name fits
-        lfs_size_t nlen = strlen(path);
-        if (nlen > lfs->name_max) {
-            err = LFS_ERR_NAMETOOLONG;
-            goto cleanup;
-        }
-
-        // get next slot and create entry to remember name
-        err = lfs_dir_commit(lfs, &file->m, LFS_MKATTRS(
-                {LFS_MKTAG(LFS_TYPE_CREATE, file->id, 0), NULL},
-                {LFS_MKTAG(LFS_TYPE_REG, file->id, nlen), path},
-                {LFS_MKTAG(LFS_TYPE_INLINESTRUCT, file->id, 0), NULL}));
-        if (err) {
-            err = LFS_ERR_NAMETOOLONG;
-            goto cleanup;
-        }
-
-        tag = LFS_MKTAG(LFS_TYPE_INLINESTRUCT, 0, 0);
-    } else if (flags & LFS_O_EXCL) {
-        err = LFS_ERR_EXIST;
-        goto cleanup;
-    } else if (lfs_tag_type3(tag) != LFS_TYPE_REG) {
-        err = LFS_ERR_ISDIR;
-        goto cleanup;
-    } else if (flags & LFS_O_TRUNC) {
-        // truncate if requested
-        tag = LFS_MKTAG(LFS_TYPE_INLINESTRUCT, file->id, 0);
-        file->flags |= LFS_F_DIRTY;
-    } else {
-        // try to load what's on disk, if it's inlined we'll fix it later
-        tag = lfs_dir_get(lfs, &file->m, LFS_MKTAG(0x700, 0x3ff, 0),
-                LFS_MKTAG(LFS_TYPE_STRUCT, file->id, 8), &file->ctz);
-        if (tag < 0) {
-            err = tag;
-            goto cleanup;
-        }
-        lfs_ctz_fromle32(&file->ctz);
-    }
-
-    // fetch attrs
-    for (unsigned i = 0; i < file->cfg->attr_count; i++) {
-        if ((file->flags & 3) != LFS_O_WRONLY) {
-            lfs_stag_t res = lfs_dir_get(lfs, &file->m,
-                    LFS_MKTAG(0x7ff, 0x3ff, 0),
-                    LFS_MKTAG(LFS_TYPE_USERATTR + file->cfg->attrs[i].type,
-                        file->id, file->cfg->attrs[i].size),
-                        file->cfg->attrs[i].buffer);
-            if (res < 0 && res != LFS_ERR_NOENT) {
-                err = res;
-                goto cleanup;
+    switch(*state){
+    case 0:
+        // deorphan if we haven't yet, needed at most once after poweron
+        if ((flags & 3) != LFS_O_RDONLY) {
+            err = lfs_fs_forceconsistency(lfs);
+            if (err) {
+                LFS_TRACE("lfs_file_opencfg -> %d", err);
+                return err;
             }
         }
 
-        if ((file->flags & 3) != LFS_O_RDONLY) {
-            if (file->cfg->attrs[i].size > lfs->attr_max) {
-                err = LFS_ERR_NOSPC;
+        // setup simple file details
+        file->flags = flags | LFS_F_OPENED;
+        file->pos = 0;
+        file->off = 0;
+        file->cache.buffer = NULL;
+
+        *state = 1;
+        workbuf->workint1 = 0;
+        break;
+    case 1:
+        // allocate entry for file if it doesn't exist
+        (*worktag) = lfs_dir_find_async(lfs, &file->m, &path, pathpointer, &file->id, (uint8_t*) &workbuf->workint1, (lfs_stag_t*) &workbuf->workint2);
+
+        if ((*worktag) < 0 && !((*worktag) == LFS_ERR_NOENT && file->id != 0x3ff)) {
+            err = (*worktag);
+            int test = err;
+            goto cleanup;
+        }
+
+        if(workbuf->workint1 >= 3){
+            *state = 3;
+        }
+        break;
+
+    case 3:
+        // get id, add to list of mdirs to catch update changes
+        file->type = LFS_TYPE_REG;
+        file->next = (lfs_file_t*)lfs->mlist;
+        lfs->mlist = (struct lfs_mlist*)file;
+        //file/dir found/not found, create if allowed.
+        if ((*worktag) == LFS_ERR_NOENT) {
+            if (!(flags & LFS_O_CREAT)) {
+                err = LFS_ERR_NOENT;
                 goto cleanup;
             }
 
+            // check that name fits
+            lfs_size_t nlen = strlen(path);
+            if (nlen > lfs->name_max) {
+                err = LFS_ERR_NAMETOOLONG;
+                goto cleanup;
+            }
+
+            // get next slot and create entry to remember name
+            err = lfs_dir_commit(lfs, &file->m, LFS_MKATTRS(
+                    {LFS_MKTAG(LFS_TYPE_CREATE, file->id, 0), NULL},
+                    {LFS_MKTAG(LFS_TYPE_REG, file->id, nlen), path},
+                    {LFS_MKTAG(LFS_TYPE_INLINESTRUCT, file->id, 0), NULL}));
+            if (err) {
+                err = LFS_ERR_NAMETOOLONG;
+                goto cleanup;
+            }
+
+            (*worktag) = LFS_MKTAG(LFS_TYPE_INLINESTRUCT, 0, 0);
+        } else if (flags & LFS_O_EXCL) {
+            err = LFS_ERR_EXIST;
+            goto cleanup;
+        } else if (lfs_tag_type3((*worktag)) != LFS_TYPE_REG) {
+            err = LFS_ERR_ISDIR;
+            goto cleanup;
+        } else if (flags & LFS_O_TRUNC) {
+            // truncate if requested
+            (*worktag) = LFS_MKTAG(LFS_TYPE_INLINESTRUCT, file->id, 0);
             file->flags |= LFS_F_DIRTY;
+        } else {
+            // try to load what's on disk, if it's inlined we'll fix it later
+            (*worktag) = lfs_dir_get(lfs, &file->m, LFS_MKTAG(0x700, 0x3ff, 0),
+                    LFS_MKTAG(LFS_TYPE_STRUCT, file->id, 8), &file->ctz);
+            if ((*worktag) < 0) {
+                err = (*worktag);
+                goto cleanup;
+            }
+            lfs_ctz_fromle32(&file->ctz);
         }
-    }
 
-    // allocate buffer if needed
-    if (file->cfg->buffer) {
-        file->cache.buffer = (uint8_t*)file->cfg->buffer;
-//    } else {
-//        file->cache.buffer = (uint8_t*)lfs_malloc(lfs->cfg->cache_size);
-        if (!file->cache.buffer) {
+        *state = 4;
+        break;
+    case 4:
+        // fetch attrs
+        for (unsigned i = 0; i < file->cfg->attr_count; i++) {
+            if ((file->flags & 3) != LFS_O_WRONLY) {
+                lfs_stag_t res = lfs_dir_get(lfs, &file->m,
+                        LFS_MKTAG(0x7ff, 0x3ff, 0),
+                        LFS_MKTAG(LFS_TYPE_USERATTR + file->cfg->attrs[i].type,
+                            file->id, file->cfg->attrs[i].size),
+                            file->cfg->attrs[i].buffer);
+                if (res < 0 && res != LFS_ERR_NOENT) {
+                    err = res;
+                    goto cleanup;
+                }
+            }
+
+            if ((file->flags & 3) != LFS_O_RDONLY) {
+                if (file->cfg->attrs[i].size > lfs->attr_max) {
+                    err = LFS_ERR_NOSPC;
+                    goto cleanup;
+                }
+
+                file->flags |= LFS_F_DIRTY;
+            }
+        }
+        *state = 5;
+        break;
+    case 5:
+        // allocate buffer if needed
+        if (file->cfg->buffer) {
+            file->cache.buffer = (uint8_t*)file->cfg->buffer;
+            if (!file->cache.buffer) {
+                err = LFS_ERR_NOMEM;
+                goto cleanup;
+            }
+        }else{
             err = LFS_ERR_NOMEM;
             goto cleanup;
         }
-    }else{
-        err = LFS_ERR_NOMEM;
-        goto cleanup;
-    }
 
-    // zero to avoid information leak
-    lfs_cache_zero(lfs, &file->cache);
+        // zero to avoid information leak
+        lfs_cache_zero(lfs, &file->cache);
 
-    if (lfs_tag_type3(tag) == LFS_TYPE_INLINESTRUCT) {
-        // load inline files
-        file->ctz.head = LFS_BLOCK_INLINE;
-        file->ctz.size = lfs_tag_size(tag);
-        file->flags |= LFS_F_INLINE;
-        file->cache.block = file->ctz.head;
-        file->cache.off = 0;
-        file->cache.size = lfs->cfg->cache_size;
+        if (lfs_tag_type3((*worktag)) == LFS_TYPE_INLINESTRUCT) {
+            // load inline files
+            file->ctz.head = LFS_BLOCK_INLINE;
+            file->ctz.size = lfs_tag_size((*worktag));
+            file->flags |= LFS_F_INLINE;
+            file->cache.block = file->ctz.head;
+            file->cache.off = 0;
+            file->cache.size = lfs->cfg->cache_size;
 
-        // don't always read (may be new/trunc file)
-        if (file->ctz.size > 0) {
-            lfs_stag_t res = lfs_dir_get(lfs, &file->m,
-                    LFS_MKTAG(0x700, 0x3ff, 0),
-                    LFS_MKTAG(LFS_TYPE_STRUCT, file->id,
-                        lfs_min(file->cache.size, 0x3fe)),
-                    file->cache.buffer);
-            if (res < 0) {
-                err = res;
-                goto cleanup;
+            // don't always read (may be new/trunc file)
+            if (file->ctz.size > 0) {
+                lfs_stag_t res = lfs_dir_get(lfs, &file->m,
+                        LFS_MKTAG(0x700, 0x3ff, 0),
+                        LFS_MKTAG(LFS_TYPE_STRUCT, file->id,
+                            lfs_min(file->cache.size, 0x3fe)),
+                        file->cache.buffer);
+                if (res < 0) {
+                    err = res;
+                    goto cleanup;
+                }
             }
         }
+
+        workbuf->_operationComplete = true;
+        break;
     }
 
     LFS_TRACE("lfs_file_opencfg -> %d", 0);
@@ -2546,10 +2684,9 @@ cleanup:
     return err;
 }
 
-int lfs_file_open(lfs_t *lfs, lfs_file_t *file,
-        const char *path, int flags) {
-    static const struct lfs_file_config defaults = {0};
-    int err = lfs_file_opencfg(lfs, file, path, flags, &defaults);
+int lfs_file_open_async(lfs_t *lfs, lfs_file_t *file,
+        lfs_workbuffer * workbuf) {
+    int err = lfs_file_opencfg_async(lfs, file, workbuf);
     return err;
 }
 
@@ -3877,9 +4014,12 @@ cleanup:
     return err;
 }
 
-int lfs_mount_async(lfs_t *lfs, const struct lfs_config *cfg, uint8_t* state, lfs_mdir_t* dir_iterator, lfs_block_t* cycle_iterator, bool FindglobalState) {
+//includes occupying the lookahead buffer
+int lfs_mount_async(lfs_t *lfs, const struct lfs_config *cfg, lfs_workbuffer *workbuf) {
     int err = 0;
-    switch(*state){
+    lfs_mdir_t *dir_iterator = &workbuf->workdir;
+    lfs_block_t *cycle_iterator = &workbuf->workblock;
+    switch(workbuf->operationState){
     case 0:
         err = lfs_init(lfs, cfg);
         if (err) {
@@ -3888,7 +4028,17 @@ int lfs_mount_async(lfs_t *lfs, const struct lfs_config *cfg, uint8_t* state, lf
         }
         *dir_iterator = {.tail = {0, 1}};
         *cycle_iterator = 0;
-        *state = 1;
+        workbuf->operationState = 1;
+
+        //Init Lookahead buffer:
+        lfs->free.off = (lfs->free.off + lfs->free.size)
+                % lfs->cfg->block_count;
+        lfs->free.size = lfs_min(8*lfs->cfg->lookahead_size, lfs->free.ack);
+        lfs->free.i = 0;
+        // find mask of free blocks from tree
+        memset(lfs->free.buffer, 0, lfs->cfg->lookahead_size);
+//        lfs_fs_traverseraw(lfs, lfs_alloc_lookahead, lfs, true);
+
         break;
     case 1:
         // scan directory blocks for superblock and any global updates
@@ -3900,6 +4050,14 @@ int lfs_mount_async(lfs_t *lfs, const struct lfs_config *cfg, uint8_t* state, lf
             }
             *cycle_iterator += 1;
 
+            //Fill lookahead buffer
+            for (int i = 0; i < 2; i++) {
+                int err = lfs_alloc_lookahead(lfs, (*dir_iterator).tail[i]);
+                if (err) {
+                    return err;
+                }
+            }
+
             // fetch next block in tail list
             lfs_stag_t tag = lfs_dir_fetchmatch(lfs, (dir_iterator), (*dir_iterator).tail,
                     LFS_MKTAG(0x7ff, 0x3ff, 0),
@@ -3910,6 +4068,34 @@ int lfs_mount_async(lfs_t *lfs, const struct lfs_config *cfg, uint8_t* state, lf
             if (tag < 0) {
                 err = tag;
                 goto cleanup;
+            }
+
+            for (uint16_t id = 0; id < (*dir_iterator).count; id++) {
+                struct lfs_ctz ctz;
+                lfs_stag_t tag = lfs_dir_get(lfs, dir_iterator, LFS_MKTAG(0x700, 0x3ff, 0),
+                        LFS_MKTAG(LFS_TYPE_STRUCT, id, sizeof(ctz)), &ctz);
+                if (tag < 0) {
+                    if (tag == LFS_ERR_NOENT) {
+                        continue;
+                    }
+                    return tag;
+                }
+                lfs_ctz_fromle32(&ctz);
+
+                if (lfs_tag_type3(tag) == LFS_TYPE_CTZSTRUCT) {
+                    err = lfs_ctz_traverse(lfs, NULL, &lfs->rcache,
+                            ctz.head, ctz.size, lfs_alloc_lookahead, lfs);
+                    if (err) {
+                        return err;
+                    }
+                } else if (lfs_tag_type3(tag) == LFS_TYPE_DIRSTRUCT) {
+                    for (int i = 0; i < 2; i++) {
+                        err = lfs_alloc_lookahead(lfs, (&ctz.head)[i]);
+                        if (err) {
+                            return err;
+                        }
+                    }
+                }
             }
 
             // has superblock?
@@ -3973,12 +4159,6 @@ int lfs_mount_async(lfs_t *lfs, const struct lfs_config *cfg, uint8_t* state, lf
 
                     lfs->attr_max = superblock.attr_max;
                 }
-
-                if(!FindglobalState){
-                //suspend search for gstate
-                    *state = 2;
-                    break;
-                }
             }
 
             // has gstate?
@@ -3988,7 +4168,7 @@ int lfs_mount_async(lfs_t *lfs, const struct lfs_config *cfg, uint8_t* state, lf
             }
             break;
         }
-        *state = 2;
+        workbuf->operationState = 2;
         break;
     case 2:
         // found superblock?
@@ -4008,9 +4188,31 @@ int lfs_mount_async(lfs_t *lfs, const struct lfs_config *cfg, uint8_t* state, lf
         lfs->gdisk = lfs->gstate;
 
         // setup free lookahead
-        lfs_alloc_reset(lfs);
+        //lfs_alloc_reset(lfs);
 
-        *state = 3;
+        // iterate over any open files for lkh
+        for (lfs_file_t *f = (lfs_file_t*)lfs->mlist; f; f = f->next) {
+            if (f->type != LFS_TYPE_REG) {
+                continue;
+            }
+
+            if ((f->flags & LFS_F_DIRTY) && !(f->flags & LFS_F_INLINE)) {
+                int err = lfs_ctz_traverse(lfs, &f->cache, &lfs->rcache,
+                        f->ctz.head, f->ctz.size, lfs_alloc_lookahead, lfs);
+                if (err) {
+                    return err;
+                }
+            }
+
+            if ((f->flags & LFS_F_WRITING) && !(f->flags & LFS_F_INLINE)) {
+                int err = lfs_ctz_traverse(lfs, &f->cache, &lfs->rcache,
+                        f->block, f->pos, lfs_alloc_lookahead, lfs);
+                if (err) {
+                    return err;
+                }
+            }
+        }
+        workbuf->_operationComplete = true;
         break;
     }
 
@@ -4020,7 +4222,6 @@ cleanup:
     lfs_unmount(lfs);
     return err;
 }
-
 int lfs_unmount(lfs_t *lfs) {
     LFS_TRACE("lfs_unmount(%p)", (void*)lfs);
     int err = lfs_deinit(lfs);
