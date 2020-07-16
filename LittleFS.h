@@ -72,6 +72,9 @@ public:
     // Open a file on the file system.
     int file_open_async(char *path, int flags);
 
+    // Open a file on the file system.
+    int file_open(lfs_file_t *file, const char* path, int flags);
+
     // Close a file
     int file_close(lfs_file_t *file);
 
@@ -117,6 +120,7 @@ public:
     lfs_t _lfs; // The actual file system
     lfs_file_t workfile; //filebuffer
     lfs_workbuffer asyncBuffer;
+    char namebuffer[64];
 
     uint8_t writeBuffer[1024]; //twoblock writeBuffer;
     int writeSize; //number of bytes to write.

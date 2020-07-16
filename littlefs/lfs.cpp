@@ -1209,26 +1209,28 @@ nextname:
 }
 
 static lfs_stag_t lfs_dir_find_async(lfs_t *lfs, lfs_mdir_t *dir,
-        char **path, uint8_t *pathpointer, uint16_t *id, uint8_t *workstate, lfs_stag_t *worktag) {
+        const char **path, uint16_t *id, lfs_workbuffer* workbuf, uint8_t* state) {
     // we reduce path to a single name if we can find it
-    switch(*workstate){
-    case 0:
+    const char *name = *path;
 
+    switch(*state){
+    case 0:
         if (id) {
             *id = 0x3ff;
         }
 
         // default to root dir
-        *worktag = LFS_MKTAG(LFS_TYPE_DIR, 0x3ff, 0);
+        workbuf->workint1 = LFS_MKTAG(LFS_TYPE_DIR, 0x3ff, 0);
         dir->tail[0] = lfs->root[0];
         dir->tail[1] = lfs->root[1];
-        *pathpointer = 0;
-        *workstate = 1;
-        break;
 
+        workbuf->workpathpointer = 0;
+
+        *state = 1;
+        break;
     case 1:
-        char *name = *path + *pathpointer;
-    nextname:
+nextname:
+        name += workbuf->workpathpointer;
         // skip slashes
         name += strspn(name, "/");
         lfs_size_t namelen = strcspn(name, "/");
@@ -1241,11 +1243,11 @@ static lfs_stag_t lfs_dir_find_async(lfs_t *lfs, lfs_mdir_t *dir,
         }
 
         // skip if matched by '..' in name
-        char *suffix = name + namelen;
+        const char *suffix = name + namelen;
         lfs_size_t sufflen;
         int depth = 1;
 
-        //cleanup name
+        //calculates folder depth, but not really used?
         while (true) {
             suffix += strspn(suffix, "/");
             sufflen = strcspn(suffix, "/");
@@ -1266,24 +1268,24 @@ static lfs_stag_t lfs_dir_find_async(lfs_t *lfs, lfs_mdir_t *dir,
             suffix += sufflen;
         }
 
-        // found path (root)
+        // found path
         if (name[0] == '\0') {
-            *workstate = 3;
-            return *worktag;
+            workbuf->_operationComplete = true;
+            return workbuf->workint1;
         }
 
         // update what we've found so far
         *path = name;
 
         // only continue if we hit a directory
-        if (lfs_tag_type3(*worktag) != LFS_TYPE_DIR) {
+        if (lfs_tag_type3(workbuf->workint1) != LFS_TYPE_DIR) {
             return LFS_ERR_NOTDIR;
         }
 
         // grab the entry data
-        if (lfs_tag_id(*worktag) != 0x3ff) {
+        if (lfs_tag_id(workbuf->workint1) != 0x3ff) {
             lfs_stag_t res = lfs_dir_get(lfs, dir, LFS_MKTAG(0x700, 0x3ff, 0),
-                    LFS_MKTAG(LFS_TYPE_STRUCT, lfs_tag_id(*worktag), 8), dir->tail);
+                    LFS_MKTAG(LFS_TYPE_STRUCT, lfs_tag_id(workbuf->workint1), 8), dir->tail);
             if (res < 0) {
                 return res;
             }
@@ -1291,36 +1293,34 @@ static lfs_stag_t lfs_dir_find_async(lfs_t *lfs, lfs_mdir_t *dir,
         }
 
         // to next name
-        *pathpointer = namelen;
-        *workstate = 2; //advance to finding entry
-//        break;
-
+        workbuf->workpathpointer = namelen;
+        *state = 2;
+        break;
     case 2:
         // find entry matching name
-            *worktag = lfs_dir_fetchmatch(lfs, dir, dir->tail,
-                    LFS_MKTAG(0x780, 0, 0),
-                    LFS_MKTAG(LFS_TYPE_NAME, 0, *pathpointer),
-                     // are we last name?
-                    (strchr(*path, '/') == NULL) ? id : NULL,
-                    lfs_dir_find_match, &(struct lfs_dir_find_match){
-                        lfs, *path, *pathpointer});
-            if (*worktag < 0) {
-                return *worktag;
-            }
+        workbuf->workint1 = lfs_dir_fetchmatch(lfs, dir, dir->tail,
+                LFS_MKTAG(0x780, 0, 0),
+                LFS_MKTAG(LFS_TYPE_NAME, 0, workbuf->workpathpointer),
+                 // are we last name?
+                (strchr(*path, '/') == NULL) ? id : NULL,
+                lfs_dir_find_match, &(struct lfs_dir_find_match){
+                    lfs, *path, workbuf->workpathpointer});
+        if (workbuf->workint1 < 0) {
+            return workbuf->workint1;
+        }
 
-            if (*worktag) {
-                *workstate = 1; //tag found, go back to name tracking finding
-                break;
-            }
+        if (workbuf->workint1) {
+            *state = 1; //back to next name in depth
+            break;
+        }
 
-            if (!dir->split) {
-                *workstate = 3;
-                return LFS_ERR_NOENT;
-            }
-
-        //if worktag = 0, we remain in case 2
+        if (!dir->split) { //file does not exist, also a solution to file_find
+            workbuf->_operationComplete = true;
+            return LFS_ERR_NOENT;
+        }
         break;
     }
+    return 0;
 }
 
 // commit logic
@@ -2503,174 +2503,149 @@ static int lfs_ctz_traverse(lfs_t *lfs,
     }
 }
 
-
 /// Top level file operations ///
-int lfs_file_opencfg_async(lfs_t *lfs, lfs_file_t *file,
-        lfs_workbuffer * workbuf) {
+int lfs_file_opencfg(lfs_t *lfs, lfs_file_t *file,
+        const char *path, int flags,
+        const struct lfs_file_config *cfg) {
 
-    char *path = workbuf->workpath;
-    uint8_t *pathpointer = &workbuf->workpathpointer;
-    int flags = workbuf->workflags;
-    uint8_t * state = &workbuf->operationState;
-    lfs_stag_t *worktag = &workbuf->workint0;
+    // deorphan if we haven't yet, needed at most once after poweron
+    if ((flags & 3) != LFS_O_RDONLY) {
+        int err = lfs_fs_forceconsistency(lfs);
+        if (err) {
+            LFS_TRACE("lfs_file_opencfg -> %d", err);
+            return err;
+        }
+    }
 
+    // setup simple file details
     int err;
+    if(file->cfg == 0){
+        file->cfg = cfg;
+    }
+    file->flags = flags | LFS_F_OPENED;
+    file->pos = 0;
+    file->off = 0;
+    file->cache.buffer = NULL;
 
-    switch(*state){
-    case 0:
-        // deorphan if we haven't yet, needed at most once after poweron
-        if ((flags & 3) != LFS_O_RDONLY) {
-            err = lfs_fs_forceconsistency(lfs);
-            if (err) {
-                LFS_TRACE("lfs_file_opencfg -> %d", err);
-                return err;
-            }
-        }
+    // allocate entry for file if it doesn't exist
+    lfs_stag_t tag = lfs_dir_find(lfs, &file->m, &path, &file->id);
+    if (tag < 0 && !(tag == LFS_ERR_NOENT && file->id != 0x3ff)) {
+        err = tag;
+        goto cleanup;
+    }
 
-        // setup simple file details
-        file->flags = flags | LFS_F_OPENED;
-        file->pos = 0;
-        file->off = 0;
-        file->cache.buffer = NULL;
+    // get id, add to list of mdirs to catch update changes
+    file->type = LFS_TYPE_REG;
+    file->next = (lfs_file_t*)lfs->mlist;
+    lfs->mlist = (struct lfs_mlist*)file;
 
-        *state = 1;
-        workbuf->workint1 = 0;
-        break;
-    case 1:
-        // allocate entry for file if it doesn't exist
-        (*worktag) = lfs_dir_find_async(lfs, &file->m, &path, pathpointer, &file->id, (uint8_t*) &workbuf->workint1, (lfs_stag_t*) &workbuf->workint2);
-
-        if ((*worktag) < 0 && !((*worktag) == LFS_ERR_NOENT && file->id != 0x3ff)) {
-            err = (*worktag);
+    if (tag == LFS_ERR_NOENT) {
+        if (!(flags & LFS_O_CREAT)) {
+            err = LFS_ERR_NOENT;
             goto cleanup;
         }
 
-        if(workbuf->workint1 >= 3){
-            *state = 3;
+        // check that name fits
+        lfs_size_t nlen = strlen(path);
+        if (nlen > lfs->name_max) {
+            err = LFS_ERR_NAMETOOLONG;
+            goto cleanup;
         }
-        break;
 
-    case 3:
-        // get id, add to list of mdirs to catch update changes
-        file->type = LFS_TYPE_REG;
-        file->next = (lfs_file_t*)lfs->mlist;
-        lfs->mlist = (struct lfs_mlist*)file;
-        //file/dir found/not found, create if allowed.
-        if ((*worktag) == LFS_ERR_NOENT) {
-            if (!(flags & LFS_O_CREAT)) {
-                err = LFS_ERR_NOENT;
-                goto cleanup;
-            }
-
-            // check that name fits
-            lfs_size_t nlen = strlen(path);
-            if (nlen > lfs->name_max) {
-                err = LFS_ERR_NAMETOOLONG;
-                goto cleanup;
-            }
-
-            // get next slot and create entry to remember name
-            // LFS_DIR_COMMIT needs to be async
-            err = lfs_dir_commit(lfs, &file->m, LFS_MKATTRS(
-                    {LFS_MKTAG(LFS_TYPE_CREATE, file->id, 0), NULL},
-                    {LFS_MKTAG(LFS_TYPE_REG, file->id, nlen), path},
-                    {LFS_MKTAG(LFS_TYPE_INLINESTRUCT, file->id, 0), NULL}));
-            if (err) {
-                err = LFS_ERR_NAMETOOLONG;
-                goto cleanup;
-            }
-
-            (*worktag) = LFS_MKTAG(LFS_TYPE_INLINESTRUCT, 0, 0);
-        } else if (flags & LFS_O_EXCL) {
-            err = LFS_ERR_EXIST;
+        // get next slot and create entry to remember name
+        err = lfs_dir_commit(lfs, &file->m, LFS_MKATTRS(
+                {LFS_MKTAG(LFS_TYPE_CREATE, file->id, 0), NULL},
+                {LFS_MKTAG(LFS_TYPE_REG, file->id, nlen), path},
+                {LFS_MKTAG(LFS_TYPE_INLINESTRUCT, file->id, 0), NULL}));
+        if (err) {
+            err = LFS_ERR_NAMETOOLONG;
             goto cleanup;
-        } else if (lfs_tag_type3((*worktag)) != LFS_TYPE_REG) {
-            err = LFS_ERR_ISDIR;
+        }
+
+        tag = LFS_MKTAG(LFS_TYPE_INLINESTRUCT, 0, 0);
+    } else if (flags & LFS_O_EXCL) {
+        err = LFS_ERR_EXIST;
+        goto cleanup;
+    } else if (lfs_tag_type3(tag) != LFS_TYPE_REG) {
+        err = LFS_ERR_ISDIR;
+        goto cleanup;
+    } else if (flags & LFS_O_TRUNC) {
+        // truncate if requested
+        tag = LFS_MKTAG(LFS_TYPE_INLINESTRUCT, file->id, 0);
+        file->flags |= LFS_F_DIRTY;
+    } else {
+        // try to load what's on disk, if it's inlined we'll fix it later
+        tag = lfs_dir_get(lfs, &file->m, LFS_MKTAG(0x700, 0x3ff, 0),
+                LFS_MKTAG(LFS_TYPE_STRUCT, file->id, 8), &file->ctz);
+        if (tag < 0) {
+            err = tag;
             goto cleanup;
-        } else if (flags & LFS_O_TRUNC) {
-            // truncate if requested
-            (*worktag) = LFS_MKTAG(LFS_TYPE_INLINESTRUCT, file->id, 0);
+        }
+        lfs_ctz_fromle32(&file->ctz);
+    }
+
+    // fetch attrs
+    for (unsigned i = 0; i < file->cfg->attr_count; i++) {
+        if ((file->flags & 3) != LFS_O_WRONLY) {
+            lfs_stag_t res = lfs_dir_get(lfs, &file->m,
+                    LFS_MKTAG(0x7ff, 0x3ff, 0),
+                    LFS_MKTAG(LFS_TYPE_USERATTR + file->cfg->attrs[i].type,
+                        file->id, file->cfg->attrs[i].size),
+                        file->cfg->attrs[i].buffer);
+            if (res < 0 && res != LFS_ERR_NOENT) {
+                err = res;
+                goto cleanup;
+            }
+        }
+
+        if ((file->flags & 3) != LFS_O_RDONLY) {
+            if (file->cfg->attrs[i].size > lfs->attr_max) {
+                err = LFS_ERR_NOSPC;
+                goto cleanup;
+            }
+
             file->flags |= LFS_F_DIRTY;
-        } else {
-            // try to load what's on disk, if it's inlined we'll fix it later
-            (*worktag) = lfs_dir_get(lfs, &file->m, LFS_MKTAG(0x700, 0x3ff, 0),
-                    LFS_MKTAG(LFS_TYPE_STRUCT, file->id, 8), &file->ctz);
-            if ((*worktag) < 0) {
-                err = (*worktag);
-                goto cleanup;
-            }
-            lfs_ctz_fromle32(&file->ctz);
         }
+    }
 
-        *state = 4;
-        break;
-    case 4:
-        // fetch attrs
-        for (unsigned i = 0; i < file->cfg->attr_count; i++) {
-            if ((file->flags & 3) != LFS_O_WRONLY) {
-                lfs_stag_t res = lfs_dir_get(lfs, &file->m,
-                        LFS_MKTAG(0x7ff, 0x3ff, 0),
-                        LFS_MKTAG(LFS_TYPE_USERATTR + file->cfg->attrs[i].type,
-                            file->id, file->cfg->attrs[i].size),
-                            file->cfg->attrs[i].buffer);
-                if (res < 0 && res != LFS_ERR_NOENT) {
-                    err = res;
-                    goto cleanup;
-                }
-            }
-
-            if ((file->flags & 3) != LFS_O_RDONLY) {
-                if (file->cfg->attrs[i].size > lfs->attr_max) {
-                    err = LFS_ERR_NOSPC;
-                    goto cleanup;
-                }
-
-                file->flags |= LFS_F_DIRTY;
-            }
-        }
-        *state = 5;
-        break;
-    case 5:
-        // allocate buffer if needed
-        if (file->cfg->buffer) {
-            file->cache.buffer = (uint8_t*)file->cfg->buffer;
-            if (!file->cache.buffer) {
-                err = LFS_ERR_NOMEM;
-                goto cleanup;
-            }
-        }else{
+    // allocate buffer if needed
+    if (file->cfg->buffer) {
+        file->cache.buffer = (uint8_t*)file->cfg->buffer;
+//    } else {
+//        file->cache.buffer = (uint8_t*)lfs_malloc(lfs->cfg->cache_size);
+        if (!file->cache.buffer) {
             err = LFS_ERR_NOMEM;
             goto cleanup;
         }
+    }else{
+        err = LFS_ERR_NOMEM;
+        goto cleanup;
+    }
 
-        // zero to avoid information leak
-        lfs_cache_zero(lfs, &file->cache);
+    // zero to avoid information leak
+    lfs_cache_zero(lfs, &file->cache);
 
-        if (lfs_tag_type3((*worktag)) == LFS_TYPE_INLINESTRUCT) {
-            // load inline files
-            file->ctz.head = LFS_BLOCK_INLINE;
-            file->ctz.size = lfs_tag_size((*worktag));
-            file->flags |= LFS_F_INLINE;
-            file->cache.block = file->ctz.head;
-            file->cache.off = 0;
-            file->cache.size = lfs->cfg->cache_size;
+    if (lfs_tag_type3(tag) == LFS_TYPE_INLINESTRUCT) {
+        // load inline files
+        file->ctz.head = LFS_BLOCK_INLINE;
+        file->ctz.size = lfs_tag_size(tag);
+        file->flags |= LFS_F_INLINE;
+        file->cache.block = file->ctz.head;
+        file->cache.off = 0;
+        file->cache.size = lfs->cfg->cache_size;
 
-            // don't always read (may be new/trunc file)
-            if (file->ctz.size > 0) {
-                lfs_stag_t res = lfs_dir_get(lfs, &file->m,
-                        LFS_MKTAG(0x700, 0x3ff, 0),
-                        LFS_MKTAG(LFS_TYPE_STRUCT, file->id,
-                            lfs_min(file->cache.size, 0x3fe)),
-                        file->cache.buffer);
-                if (res < 0) {
-                    err = res;
-                    goto cleanup;
-                }
+        // don't always read (may be new/trunc file)
+        if (file->ctz.size > 0) {
+            lfs_stag_t res = lfs_dir_get(lfs, &file->m,
+                    LFS_MKTAG(0x700, 0x3ff, 0),
+                    LFS_MKTAG(LFS_TYPE_STRUCT, file->id,
+                        lfs_min(file->cache.size, 0x3fe)),
+                    file->cache.buffer);
+            if (res < 0) {
+                err = res;
+                goto cleanup;
             }
         }
-
-        workbuf->_operationComplete = true;
-        break;
     }
 
     LFS_TRACE("lfs_file_opencfg -> %d", 0);
@@ -2684,9 +2659,10 @@ cleanup:
     return err;
 }
 
-int lfs_file_open_async(lfs_t *lfs, lfs_file_t *file,
-        lfs_workbuffer * workbuf) {
-    int err = lfs_file_opencfg_async(lfs, file, workbuf);
+int lfs_file_open(lfs_t *lfs, lfs_file_t *file,
+        const char *path, int flags) {
+    static const struct lfs_file_config defaults = {0};
+    int err = lfs_file_opencfg(lfs, file, path, flags, &defaults);
     return err;
 }
 
@@ -4909,4 +4885,189 @@ lfs_ssize_t lfs_file_write_async(lfs_t *lfs, lfs_file_t *file,
         break;
     }
     return size;
+}
+
+/// Top level file operations ///
+int lfs_file_opencfg_async(lfs_t *lfs, lfs_file_t *file,
+           char *path, lfs_workbuffer* workbuf, uint8_t* operationState) {
+
+    int flags = workbuf->workflags;
+    int err;
+
+    switch(*operationState){
+    case 0:
+        // deorphan if we haven't yet, needed at most once after poweron
+        if ((flags & 3) != LFS_O_RDONLY) {
+            int err = lfs_fs_forceconsistency(lfs);
+            if (err) {
+                LFS_TRACE("lfs_file_opencfg -> %d", err);
+                return err;
+            }
+        }
+
+        // setup simple file details
+        if(file->cfg == 0){
+            return LFS_ERR_NOMEM;
+        }
+        file->flags = flags | LFS_F_OPENED;
+        file->pos = 0;
+        file->off = 0;
+        file->cache.buffer = NULL;
+
+        *operationState = 1;
+        workbuf->workuint0 = 0;
+        break;
+    case 1:
+        // allocate entry for file if it doesn't exist
+        // workbuf->workint0 is occupied by the allocation tag
+        // workbuf->workint1 is occupied by working tag for dir_find operation
+        // workbuf->workuint0 is occupied by state counter for dir_find
+        workbuf->workint0 = lfs_dir_find_async(lfs, &file->m, (const char**)&path ,&file->id, workbuf, (uint8_t*) &workbuf->workuint0);
+        if (workbuf->workint0 < 0 && !(workbuf->workint0 == LFS_ERR_NOENT && file->id != 0x3ff)) {
+            err = workbuf->workint0;
+            goto cleanup;
+        }
+        workbuf->workpath = path;
+        if(workbuf->_operationComplete){
+            //dir_find succes!
+            workbuf->_operationComplete = false;
+            *operationState = 2;
+        }
+        break;
+
+    case 2:
+        // get id, add to list of mdirs to catch update changes
+        file->type = LFS_TYPE_REG;
+        file->next = (lfs_file_t*)lfs->mlist;
+        lfs->mlist = (struct lfs_mlist*)file;
+
+        if (workbuf->workint0 == LFS_ERR_NOENT) {
+            if (!(flags & LFS_O_CREAT)) {
+                err = LFS_ERR_NOENT;
+                goto cleanup;
+            }
+
+            // check that name fits
+            lfs_size_t nlen = strlen(path);
+            if (nlen > lfs->name_max) {
+                err = LFS_ERR_NAMETOOLONG;
+                goto cleanup;
+            }
+
+            // get next slot and create entry to remember name
+            err = lfs_dir_commit(lfs, &file->m, LFS_MKATTRS(
+                    {LFS_MKTAG(LFS_TYPE_CREATE, file->id, 0), NULL},
+                    {LFS_MKTAG(LFS_TYPE_REG, file->id, nlen), path},
+                    {LFS_MKTAG(LFS_TYPE_INLINESTRUCT, file->id, 0), NULL}));
+            if (err) {
+                err = LFS_ERR_NAMETOOLONG;
+                goto cleanup;
+            }
+
+            workbuf->workint0 = LFS_MKTAG(LFS_TYPE_INLINESTRUCT, 0, 0);
+        } else if (flags & LFS_O_EXCL) {
+            err = LFS_ERR_EXIST;
+            goto cleanup;
+        } else if (lfs_tag_type3(workbuf->workint0) != LFS_TYPE_REG) {
+            err = LFS_ERR_ISDIR;
+            goto cleanup;
+        } else if (flags & LFS_O_TRUNC) {
+            // truncate if requested
+            workbuf->workint0 = LFS_MKTAG(LFS_TYPE_INLINESTRUCT, file->id, 0);
+            file->flags |= LFS_F_DIRTY;
+        } else {
+            // try to load what's on disk, if it's inlined we'll fix it later
+            workbuf->workint0 = lfs_dir_get(lfs, &file->m, LFS_MKTAG(0x700, 0x3ff, 0),
+                    LFS_MKTAG(LFS_TYPE_STRUCT, file->id, 8), &file->ctz);
+            if (workbuf->workint0 < 0) {
+                err = workbuf->workint0;
+                goto cleanup;
+            }
+            lfs_ctz_fromle32(&file->ctz);
+        }
+
+        // fetch attrs
+        for (unsigned i = 0; i < file->cfg->attr_count; i++) {
+            if ((file->flags & 3) != LFS_O_WRONLY) {
+                lfs_stag_t res = lfs_dir_get(lfs, &file->m,
+                        LFS_MKTAG(0x7ff, 0x3ff, 0),
+                        LFS_MKTAG(LFS_TYPE_USERATTR + file->cfg->attrs[i].type,
+                            file->id, file->cfg->attrs[i].size),
+                            file->cfg->attrs[i].buffer);
+                if (res < 0 && res != LFS_ERR_NOENT) {
+                    err = res;
+                    goto cleanup;
+                }
+            }
+
+            if ((file->flags & 3) != LFS_O_RDONLY) {
+                if (file->cfg->attrs[i].size > lfs->attr_max) {
+                    err = LFS_ERR_NOSPC;
+                    goto cleanup;
+                }
+
+                file->flags |= LFS_F_DIRTY;
+            }
+        }
+
+        // allocate buffer if needed
+        if (file->cfg->buffer) {
+            file->cache.buffer = (uint8_t*)file->cfg->buffer;
+    //    } else {
+    //        file->cache.buffer = (uint8_t*)lfs_malloc(lfs->cfg->cache_size);
+            if (!file->cache.buffer) {
+                err = LFS_ERR_NOMEM;
+                goto cleanup;
+            }
+        }else{
+            err = LFS_ERR_NOMEM;
+            goto cleanup;
+        }
+
+        // zero to avoid information leak
+        lfs_cache_zero(lfs, &file->cache);
+
+        if (lfs_tag_type3(workbuf->workint0) == LFS_TYPE_INLINESTRUCT) {
+            // load inline files
+            file->ctz.head = LFS_BLOCK_INLINE;
+            file->ctz.size = lfs_tag_size(workbuf->workint0);
+            file->flags |= LFS_F_INLINE;
+            file->cache.block = file->ctz.head;
+            file->cache.off = 0;
+            file->cache.size = lfs->cfg->cache_size;
+
+            // don't always read (may be new/trunc file)
+            if (file->ctz.size > 0) {
+                lfs_stag_t res = lfs_dir_get(lfs, &file->m,
+                        LFS_MKTAG(0x700, 0x3ff, 0),
+                        LFS_MKTAG(LFS_TYPE_STRUCT, file->id,
+                            lfs_min(file->cache.size, 0x3fe)),
+                        file->cache.buffer);
+                if (res < 0) {
+                    err = res;
+                    goto cleanup;
+                }
+            }
+        }
+
+        LFS_TRACE("lfs_file_opencfg -> %d", 0);
+        workbuf->_operationComplete = true;
+        break;
+    }
+
+    return 0;
+
+cleanup:
+    // clean up lingering resources
+    file->flags |= LFS_F_ERRED;
+    lfs_file_close(lfs, file);
+    LFS_TRACE("lfs_file_opencfg -> %d", err);
+    return err;
+}
+
+
+int lfs_file_open_async(lfs_t *lfs, lfs_file_t *file,
+                        char *path, lfs_workbuffer * workbuf, uint8_t* operationState){
+    int err = lfs_file_opencfg_async(lfs, file, path, workbuf, operationState);
+    return err;
 }
