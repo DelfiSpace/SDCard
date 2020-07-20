@@ -61,6 +61,10 @@ typedef uint32_t lfs_block_t;
 #define LFS_ATTR_MAX 1022
 #endif
 
+#ifndef LFS_DEPTH_MAX
+#define LFS_DEPTH_MAX 64
+#endif
+
 // Possible error codes, these are negative to allow
 // valid positive return values
 enum lfs_error {
@@ -632,8 +636,9 @@ struct lfs_workbuffer {
     uint8_t operationState = 0;
 
     uint8_t* datapointer = 0;
-    uint8_t workchar1 = 0;
-    uint8_t workchar2 = 0;
+    uint8_t alloc_state = 0; //dedicated state counter for allocation as it is used so often.
+    uint8_t traverse_state = 0;
+    lfs_block_t workcycle = 0;
 };
 
 // Open a file
