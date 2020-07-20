@@ -138,14 +138,14 @@ void LittleFS::TaskRun(){
     case 5:
         //Case 4 5 6: Open Write Close
         //Console::log("WriteState: %d", asyncBuffer.operationState);
-        err = lfs_file_write(&_lfs, &workfile, writeBuffer, writeSize);
+        err = lfs_file_write_async(&_lfs, &workfile, writeBuffer, writeSize, &asyncBuffer, &asyncBuffer.operationState);
         if(err < 0){
             Console::log("Writing Error: -%d", -err);
             asyncBuffer.operationState = 0;
             curOperation = 0;
             _err = err;
         }
-        else{//if(asyncBuffer._operationComplete){
+        else if(asyncBuffer._operationComplete){
             Console::log("Written.");
             asyncBuffer.operationState = 0;
             curOperation = 6;

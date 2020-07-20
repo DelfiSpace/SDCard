@@ -4738,26 +4738,28 @@ int lfs_traverse_async(lfs_t *lfs, uint8_t *state, lfs_mdir_t* dir, lfs_block_t*
 }
 
 lfs_ssize_t lfs_file_write_async(lfs_t *lfs, lfs_file_t *file,
-        const void *buffer, lfs_size_t size, lfs_workbuffer *workbuf) {
-    switch(workbuf->operationState){
-    case 0:
+        const void *buffer, lfs_size_t size, lfs_workbuffer *workbuf, uint8_t *state) {
         //LFS_ASSERT(file->flags & LFS_F_OPENED);
-        if(!(file->flags & LFS_F_OPENED)){
-            return LFS_ERR_NOTOPEN;
-        }
+    //LFS_ASSERT(file->flags & LFS_F_OPENED);
 
-        //LFS_ASSERT((file->flags & 3) != LFS_O_RDONLY);
+    //workint0 : tracking of how many bytes have not been written yet
+
+    switch(*state){
+    case 0:
+        if(!(file->flags & LFS_F_OPENED)){
+                return LFS_ERR_NOTOPEN;
+            }
+
+    //    LFS_ASSERT((file->flags & 3) != LFS_O_RDONLY);
         if(!(file->flags & LFS_F_OPENED)){
             return LFS_ERR_NOATTR;
         }
 
-        const uint8_t *data = (const uint8_t*)buffer;
-        workbuf->workuint0 = size;
-        workbuf->operationState = 1;
-        break;
-    case 1:
+        workbuf->datapointer = (uint8_t*)buffer;
+        workbuf->workint0 = size;
+
         if (file->flags & LFS_F_READING) {
-                // drop any reads
+            // drop any reads
             int err = lfs_file_flush(lfs, file);
             if (err) {
                 LFS_TRACE("lfs_file_write -> %d", err);
@@ -4774,14 +4776,15 @@ lfs_ssize_t lfs_file_write_async(lfs_t *lfs, lfs_file_t *file,
             LFS_TRACE("lfs_file_write -> %d", LFS_ERR_FBIG);
             return LFS_ERR_FBIG;
         }
-        workbuf->operationState = 2;
+        *state = 1;
         break;
-    case 2:
+    case 1:
         if (!(file->flags & LFS_F_WRITING) && file->pos > file->ctz.size) {
             // fill with zeros
             lfs_off_t pos = file->pos;
             file->pos = file->ctz.size;
 
+            //fill with zeros to skip the ctz, recursion is quite difficult in state machine construction
             while (file->pos < pos) {
                 lfs_ssize_t res = lfs_file_write(lfs, file, &(uint8_t){0}, 1);
                 if (res < 0) {
@@ -4790,11 +4793,11 @@ lfs_ssize_t lfs_file_write_async(lfs_t *lfs, lfs_file_t *file,
                 }
             }
         }
-        workbuf->operationState = 3;
+        *state = 2;
         break;
-    case 3:
+    case 2:
         if ((file->flags & LFS_F_INLINE) &&
-                lfs_max(file->pos+size, file->ctz.size) >
+                lfs_max(file->pos+workbuf->workint0, file->ctz.size) >
                 lfs_min(0x3fe, lfs_min(
                     lfs->cfg->cache_size, lfs->cfg->block_size/8))) {
             // inline file doesn't fit anymore
@@ -4805,87 +4808,85 @@ lfs_ssize_t lfs_file_write_async(lfs_t *lfs, lfs_file_t *file,
                 return err;
             }
         }
-        workbuf->operationState = 4;
-        break;
-    case 4:
-        while (workbuf->workuint0 > 0) {
-            // check if we need a new block
-            if (!(file->flags & LFS_F_WRITING) ||
-                    file->off == lfs->cfg->block_size) {
-                if (!(file->flags & LFS_F_INLINE)) {
-                    if (!(file->flags & LFS_F_WRITING) && file->pos > 0) {
-                        // find out which block we're extending from
-                        int err = lfs_ctz_find(lfs, NULL, &file->cache,
-                                file->ctz.head, file->ctz.size,
-                                file->pos-1, &file->block, &file->off);
-                        if (err) {
-                            file->flags |= LFS_F_ERRED;
-                            LFS_TRACE("lfs_file_write -> %d", err);
-                            return err;
-                        }
-
-                        // mark cache as dirty since we may have read data into it
-                        lfs_cache_zero(lfs, &file->cache);
-                    }
-
-                    // extend file with new blocks
-                    lfs_alloc_ack(lfs);
-                    int err = lfs_ctz_extend(lfs, &file->cache, &lfs->rcache,
-                            file->block, file->pos,
-                            &file->block, &file->off);
+        *state = 3;
+    case 3:
+        // check if we need a new block
+        if (!(file->flags & LFS_F_WRITING) ||
+                file->off == lfs->cfg->block_size) {
+            if (!(file->flags & LFS_F_INLINE)) {
+                if (!(file->flags & LFS_F_WRITING) && file->pos > 0) {
+                    // find out which block we're extending from
+                    int err = lfs_ctz_find(lfs, NULL, &file->cache,
+                            file->ctz.head, file->ctz.size,
+                            file->pos-1, &file->block, &file->off);
                     if (err) {
                         file->flags |= LFS_F_ERRED;
                         LFS_TRACE("lfs_file_write -> %d", err);
                         return err;
                     }
-                } else {
-                    file->block = LFS_BLOCK_INLINE;
-                    file->off = file->pos;
+
+                    // mark cache as dirty since we may have read data into it
+                    lfs_cache_zero(lfs, &file->cache);
                 }
 
-                file->flags |= LFS_F_WRITING;
-            }
-
-            // program as much as we can in current block
-            lfs_size_t diff = lfs_min(workbuf->workuint0, lfs->cfg->block_size - file->off);
-            while (true) {
-                int err = lfs_bd_prog(lfs, &file->cache, &lfs->rcache, true,
-                        file->block, file->off, data, diff);
-                if (err) {
-                    if (err == LFS_ERR_CORRUPT) {
-                        goto relocate;
-                    }
-                    file->flags |= LFS_F_ERRED;
-                    LFS_TRACE("lfs_file_write -> %d", err);
-                    return err;
-                }
-
-                break;
-    relocate:
-                err = lfs_file_relocate(lfs, file);
+                // extend file with new blocks
+                lfs_alloc_ack(lfs);
+                int err = lfs_ctz_extend(lfs, &file->cache, &lfs->rcache,
+                        file->block, file->pos,
+                        &file->block, &file->off);
                 if (err) {
                     file->flags |= LFS_F_ERRED;
                     LFS_TRACE("lfs_file_write -> %d", err);
                     return err;
                 }
+            } else {
+                file->block = LFS_BLOCK_INLINE;
+                file->off = file->pos;
             }
 
-            file->pos += diff;
-            file->off += diff;
-            data += diff;
-            workbuf->workuint0 -= diff;
+            file->flags |= LFS_F_WRITING;
+        }
 
-            lfs_alloc_ack(lfs);
+        // program as much as we can in current block
+        lfs_size_t diff = lfs_min(workbuf->workint0, lfs->cfg->block_size - file->off);
+        while (true) {
+            int err = lfs_bd_prog(lfs, &file->cache, &lfs->rcache, true,
+                    file->block, file->off, (const uint8_t*)workbuf->datapointer, diff);
+            if (err) {
+                if (err == LFS_ERR_CORRUPT) {
+                    goto relocate;
+                }
+                file->flags |= LFS_F_ERRED;
+                LFS_TRACE("lfs_file_write -> %d", err);
+                return err;
+            }
+
+            break;
+relocate:
+            err = lfs_file_relocate(lfs, file);
+            if (err) {
+                file->flags |= LFS_F_ERRED;
+                LFS_TRACE("lfs_file_write -> %d", err);
+                return err;
+            }
         }
-        if (workbuf->workuint0 <= 0){ //done
-            workbuf->_operationComplete = true;
-            file->flags &= ~LFS_F_ERRED;
-            LFS_TRACE("lfs_file_write -> %"PRId32, size);
-        }
-        break;
+
+        file->pos += diff;
+        file->off += diff;
+        workbuf->datapointer += diff;
+        workbuf->workint0 -= diff;
+
+        lfs_alloc_ack(lfs);
     }
-    return size;
+
+    file->flags &= ~LFS_F_ERRED;
+    LFS_TRACE("lfs_file_write -> %"PRId32, size);
+    if(workbuf->workint0 == 0){
+        workbuf->_operationComplete = true;
+    }
+    return workbuf->workint0;
 }
+
 
 /// Top level file operations ///
 int lfs_file_opencfg_async(lfs_t *lfs, lfs_file_t *file,

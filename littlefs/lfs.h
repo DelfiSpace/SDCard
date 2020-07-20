@@ -630,6 +630,10 @@ struct lfs_workbuffer {
     uint8_t workpathpointer = 0;
     bool _operationComplete = false;
     uint8_t operationState = 0;
+
+    uint8_t* datapointer = 0;
+    uint8_t workchar1 = 0;
+    uint8_t workchar2 = 0;
 };
 
 // Open a file
@@ -683,6 +687,6 @@ int lfs_file_opencfg_async(lfs_t *lfs, lfs_file_t *file,
         char *path, lfs_workbuffer* workbuf, uint8_t operationState);
 
 lfs_ssize_t lfs_file_write_async(lfs_t *lfs, lfs_file_t *file,
-        const void *buffer, lfs_size_t size, lfs_workbuffer* workbuf);
+        const void *buffer, lfs_size_t size, lfs_workbuffer* workbuf, uint8_t* state);
 
 #endif
