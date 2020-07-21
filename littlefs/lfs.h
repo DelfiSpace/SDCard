@@ -676,7 +676,7 @@ int lfs_traverse_async(lfs_t *lfs, uint8_t *state, lfs_mdir_t* dir, lfs_block_t*
 //
 // Returns a negative error code on failure.
 int lfs_file_open_async(lfs_t *lfs, lfs_file_t *file,
-        char *path, lfs_workbuffer * workbuf, uint8_t* operationState);
+        const char *path, lfs_workbuffer * workbuf, uint8_t* operationState);
 
 // Open a file with extra configuration
 //
@@ -689,7 +689,7 @@ int lfs_file_open_async(lfs_t *lfs, lfs_file_t *file,
 //
 // Returns a negative error code on failure.
 int lfs_file_opencfg_async(lfs_t *lfs, lfs_file_t *file,
-        char *path, lfs_workbuffer* workbuf, uint8_t operationState);
+        const char *path, lfs_workbuffer* workbuf, uint8_t operationState);
 
 lfs_ssize_t lfs_file_write_async(lfs_t *lfs, lfs_file_t *file,
         const void *buffer, lfs_size_t size, lfs_workbuffer* workbuf, uint8_t* state);

@@ -2915,7 +2915,9 @@ static int lfs_file_relocate_async(lfs_t *lfs, lfs_file_t *file, lfs_workbuffer 
         lfs_cache_drop(lfs, &lfs->pcache);
         *state = 1;
         return 0;
-
+    default:
+        *state = 1;
+        break;
     }
 }
 
@@ -5008,6 +5010,7 @@ lfs_ssize_t lfs_file_write_async(lfs_t *lfs, lfs_file_t *file,
                 }
             }
         }
+        workbuf->workint1 = 0;
         *state = 2;
         break;
     case 2:
@@ -5121,7 +5124,7 @@ relocate:
 
 /// Top level file operations ///
 int lfs_file_opencfg_async(lfs_t *lfs, lfs_file_t *file,
-           char *path, lfs_workbuffer* workbuf, uint8_t* operationState) {
+           const char *path, lfs_workbuffer* workbuf, uint8_t* operationState) {
 
     int flags = workbuf->workflags;
     int err;
@@ -5154,12 +5157,12 @@ int lfs_file_opencfg_async(lfs_t *lfs, lfs_file_t *file,
         // workbuf->workint0 is occupied by the allocation tag
         // workbuf->workint1 is occupied by working tag for dir_find operation
         // workbuf->workuint0 is occupied by state counter for dir_find
-        workbuf->workint0 = lfs_dir_find_async(lfs, &file->m, (const char**)&path ,&file->id, workbuf, (uint8_t*) &workbuf->workuint0);
+        workbuf->workint0 = lfs_dir_find_async(lfs, &file->m, (const char**)&workbuf->workpath ,&file->id, workbuf, (uint8_t*) &workbuf->workuint0);
         if (workbuf->workint0 < 0 && !(workbuf->workint0 == LFS_ERR_NOENT && file->id != 0x3ff)) {
             err = workbuf->workint0;
             goto cleanup;
         }
-        workbuf->workpath = path;
+//        workbuf->workpath = path;
         if(workbuf->_operationComplete){
             //dir_find succes!
             workbuf->_operationComplete = false;
@@ -5299,7 +5302,7 @@ cleanup:
 
 
 int lfs_file_open_async(lfs_t *lfs, lfs_file_t *file,
-                        char *path, lfs_workbuffer * workbuf, uint8_t* operationState){
+                        const char *path, lfs_workbuffer * workbuf, uint8_t* operationState){
     int err = lfs_file_opencfg_async(lfs, file, path, workbuf, operationState);
     return err;
 }
