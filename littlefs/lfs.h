@@ -624,6 +624,7 @@ struct lfs_workbuffer {
     lfs_file_t *workfile;
     lfs_mdir_t workdir;
     lfs_block_t workblock;
+    lfs_stag_t worktag;
     char * workpath;
 
     int32_t workint0 = 0;
@@ -631,7 +632,7 @@ struct lfs_workbuffer {
     int32_t workint2 = 0;
     uint32_t workuint0 = 0;
     int32_t workflags = 0;
-    uint8_t workpathpointer = 0;
+    char * workpathpointer = 0;
     bool _operationComplete = false;
     uint8_t operationState = 0;
 
@@ -676,7 +677,7 @@ int lfs_traverse_async(lfs_t *lfs, uint8_t *state, lfs_mdir_t* dir, lfs_block_t*
 //
 // Returns a negative error code on failure.
 int lfs_file_open_async(lfs_t *lfs, lfs_file_t *file,
-        const char *path, lfs_workbuffer * workbuf, uint8_t* operationState);
+        char *path, int flags, lfs_workbuffer * workbuf, uint8_t* operationState);
 
 // Open a file with extra configuration
 //
@@ -689,7 +690,7 @@ int lfs_file_open_async(lfs_t *lfs, lfs_file_t *file,
 //
 // Returns a negative error code on failure.
 int lfs_file_opencfg_async(lfs_t *lfs, lfs_file_t *file,
-        const char *path, lfs_workbuffer* workbuf, uint8_t operationState);
+        char *path, int flags, lfs_workbuffer* workbuf, uint8_t operationState);
 
 lfs_ssize_t lfs_file_write_async(lfs_t *lfs, lfs_file_t *file,
         const void *buffer, lfs_size_t size, lfs_workbuffer* workbuf, uint8_t* state);

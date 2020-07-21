@@ -1277,43 +1277,37 @@ nextname:
 static lfs_stag_t lfs_dir_find_async(lfs_t *lfs, lfs_mdir_t *dir,
         const char **path, uint16_t *id, lfs_workbuffer* workbuf, uint8_t* state) {
     // we reduce path to a single name if we can find it
-    const char *name = *path;
 
+    //workint1 stores the found tag
     switch(*state){
     case 0:
         if (id) {
             *id = 0x3ff;
         }
-
         // default to root dir
         workbuf->workint1 = LFS_MKTAG(LFS_TYPE_DIR, 0x3ff, 0);
         dir->tail[0] = lfs->root[0];
         dir->tail[1] = lfs->root[1];
-
-        workbuf->workpathpointer = 0;
-
+        workbuf->workpathpointer = (char*) *path;
         *state = 1;
         break;
     case 1:
-nextname:
-        name += workbuf->workpathpointer;
+    nextname:
         // skip slashes
-        name += strspn(name, "/");
-        lfs_size_t namelen = strcspn(name, "/");
+        workbuf->workpathpointer += strspn(workbuf->workpathpointer, "/");
+        lfs_size_t namelen = strcspn(workbuf->workpathpointer, "/");
 
         // skip '.' and root '..'
-        if ((namelen == 1 && memcmp(name, ".", 1) == 0) ||
-            (namelen == 2 && memcmp(name, "..", 2) == 0)) {
-            name += namelen;
+        if ((namelen == 1 && memcmp(workbuf->workpathpointer, ".", 1) == 0) ||
+            (namelen == 2 && memcmp(workbuf->workpathpointer, "..", 2) == 0)) {
+            workbuf->workpathpointer += namelen;
             goto nextname;
         }
 
         // skip if matched by '..' in name
-        const char *suffix = name + namelen;
+        char *suffix = workbuf->workpathpointer + namelen;
         lfs_size_t sufflen;
         int depth = 1;
-
-        //calculates folder depth, but not really used?
         while (true) {
             suffix += strspn(suffix, "/");
             sufflen = strcspn(suffix, "/");
@@ -1324,7 +1318,7 @@ nextname:
             if (sufflen == 2 && memcmp(suffix, "..", 2) == 0) {
                 depth -= 1;
                 if (depth == 0) {
-                    name = suffix + sufflen;
+                    workbuf->workpathpointer = suffix + sufflen;
                     goto nextname;
                 }
             } else {
@@ -1335,13 +1329,13 @@ nextname:
         }
 
         // found path
-        if (name[0] == '\0') {
+        if (workbuf->workpathpointer[0] == '\0') {
             workbuf->_operationComplete = true;
             return workbuf->workint1;
         }
 
         // update what we've found so far
-        *path = name;
+        *path = workbuf->workpathpointer;
 
         // only continue if we hit a directory
         if (lfs_tag_type3(workbuf->workint1) != LFS_TYPE_DIR) {
@@ -1353,37 +1347,41 @@ nextname:
             lfs_stag_t res = lfs_dir_get(lfs, dir, LFS_MKTAG(0x700, 0x3ff, 0),
                     LFS_MKTAG(LFS_TYPE_STRUCT, lfs_tag_id(workbuf->workint1), 8), dir->tail);
             if (res < 0) {
+                workbuf->_operationComplete = true;
                 return res;
             }
             lfs_pair_fromle32(dir->tail);
         }
-
-        // to next name
-        workbuf->workpathpointer = namelen;
         *state = 2;
         break;
     case 2:
         // find entry matching name
+        namelen = strcspn(workbuf->workpathpointer, "/");
+
         workbuf->workint1 = lfs_dir_fetchmatch(lfs, dir, dir->tail,
                 LFS_MKTAG(0x780, 0, 0),
-                LFS_MKTAG(LFS_TYPE_NAME, 0, workbuf->workpathpointer),
+                LFS_MKTAG(LFS_TYPE_NAME, 0, namelen),
                  // are we last name?
-                (strchr(*path, '/') == NULL) ? id : NULL,
+                (strchr(workbuf->workpathpointer, '/') == NULL) ? id : NULL,
                 lfs_dir_find_match, &(struct lfs_dir_find_match){
-                    lfs, *path, workbuf->workpathpointer});
+                    lfs, workbuf->workpathpointer, namelen});
         if (workbuf->workint1 < 0) {
+            workbuf->_operationComplete = true;
             return workbuf->workint1;
         }
 
         if (workbuf->workint1) {
-            *state = 1; //back to next name in depth
-            break;
+            // to next name
+            workbuf->workpathpointer += namelen;
+            *state = 1;
+            return 0; //dont do the last check
         }
 
-        if (!dir->split) { //file does not exist, also a solution to file_find
+        if (!dir->split) {
             workbuf->_operationComplete = true;
             return LFS_ERR_NOENT;
         }
+
         break;
     }
     return 0;
@@ -5124,22 +5122,24 @@ relocate:
 
 /// Top level file operations ///
 int lfs_file_opencfg_async(lfs_t *lfs, lfs_file_t *file,
-           const char *path, lfs_workbuffer* workbuf, uint8_t* operationState) {
+           char *path, int flags,
+           lfs_workbuffer* workbuf, uint8_t* state) {
 
-    int flags = workbuf->workflags;
-    int err;
+// deorphan if we haven't yet, needed at most once after poweron
+    //worktag used
+    //workint0 is state counter for finding dir
 
-    switch(*operationState){
+    int err = 0;
+
+    switch(*state){
     case 0:
-        // deorphan if we haven't yet, needed at most once after poweron
         if ((flags & 3) != LFS_O_RDONLY) {
-            int err = lfs_fs_forceconsistency(lfs);
+            err = lfs_fs_forceconsistency(lfs);
             if (err) {
                 LFS_TRACE("lfs_file_opencfg -> %d", err);
                 return err;
             }
         }
-
         // setup simple file details
         if(file->cfg == 0){
             return LFS_ERR_NOMEM;
@@ -5148,35 +5148,33 @@ int lfs_file_opencfg_async(lfs_t *lfs, lfs_file_t *file,
         file->pos = 0;
         file->off = 0;
         file->cache.buffer = NULL;
-
-        *operationState = 1;
-        workbuf->workuint0 = 0;
+        workbuf->workint0 = 0;
+        *state = 1;
         break;
     case 1:
         // allocate entry for file if it doesn't exist
-        // workbuf->workint0 is occupied by the allocation tag
-        // workbuf->workint1 is occupied by working tag for dir_find operation
-        // workbuf->workuint0 is occupied by state counter for dir_find
-        workbuf->workint0 = lfs_dir_find_async(lfs, &file->m, (const char**)&workbuf->workpath ,&file->id, workbuf, (uint8_t*) &workbuf->workuint0);
-        if (workbuf->workint0 < 0 && !(workbuf->workint0 == LFS_ERR_NOENT && file->id != 0x3ff)) {
-            err = workbuf->workint0;
+        workbuf->worktag = lfs_dir_find_async(lfs, &file->m, (const char **) &path, &file->id, workbuf, (uint8_t*) &workbuf->workint0);
+        if (workbuf->worktag < 0 && !(workbuf->worktag == LFS_ERR_NOENT && file->id != 0x3ff)) {
+            err = workbuf->worktag;
             goto cleanup;
         }
-//        workbuf->workpath = path;
-        if(workbuf->_operationComplete){
-            //dir_find succes!
+        //save changes to the path:
+        workbuf->workpath = path;
+
+        if(workbuf->_operationComplete == true){
             workbuf->_operationComplete = false;
-            *operationState = 2;
+            *state = 2;
         }
         break;
 
     case 2:
+
         // get id, add to list of mdirs to catch update changes
         file->type = LFS_TYPE_REG;
         file->next = (lfs_file_t*)lfs->mlist;
         lfs->mlist = (struct lfs_mlist*)file;
 
-        if (workbuf->workint0 == LFS_ERR_NOENT) {
+        if (workbuf->worktag == LFS_ERR_NOENT) {
             if (!(flags & LFS_O_CREAT)) {
                 err = LFS_ERR_NOENT;
                 goto cleanup;
@@ -5199,23 +5197,23 @@ int lfs_file_opencfg_async(lfs_t *lfs, lfs_file_t *file,
                 goto cleanup;
             }
 
-            workbuf->workint0 = LFS_MKTAG(LFS_TYPE_INLINESTRUCT, 0, 0);
+            workbuf->worktag = LFS_MKTAG(LFS_TYPE_INLINESTRUCT, 0, 0);
         } else if (flags & LFS_O_EXCL) {
             err = LFS_ERR_EXIST;
             goto cleanup;
-        } else if (lfs_tag_type3(workbuf->workint0) != LFS_TYPE_REG) {
+        } else if (lfs_tag_type3(workbuf->worktag) != LFS_TYPE_REG) {
             err = LFS_ERR_ISDIR;
             goto cleanup;
         } else if (flags & LFS_O_TRUNC) {
             // truncate if requested
-            workbuf->workint0 = LFS_MKTAG(LFS_TYPE_INLINESTRUCT, file->id, 0);
+            workbuf->worktag = LFS_MKTAG(LFS_TYPE_INLINESTRUCT, file->id, 0);
             file->flags |= LFS_F_DIRTY;
         } else {
             // try to load what's on disk, if it's inlined we'll fix it later
-            workbuf->workint0 = lfs_dir_get(lfs, &file->m, LFS_MKTAG(0x700, 0x3ff, 0),
+            workbuf->worktag = lfs_dir_get(lfs, &file->m, LFS_MKTAG(0x700, 0x3ff, 0),
                     LFS_MKTAG(LFS_TYPE_STRUCT, file->id, 8), &file->ctz);
-            if (workbuf->workint0 < 0) {
-                err = workbuf->workint0;
+            if (workbuf->worktag < 0) {
+                err = workbuf->worktag;
                 goto cleanup;
             }
             lfs_ctz_fromle32(&file->ctz);
@@ -5262,10 +5260,10 @@ int lfs_file_opencfg_async(lfs_t *lfs, lfs_file_t *file,
         // zero to avoid information leak
         lfs_cache_zero(lfs, &file->cache);
 
-        if (lfs_tag_type3(workbuf->workint0) == LFS_TYPE_INLINESTRUCT) {
+        if (lfs_tag_type3(workbuf->worktag) == LFS_TYPE_INLINESTRUCT) {
             // load inline files
             file->ctz.head = LFS_BLOCK_INLINE;
-            file->ctz.size = lfs_tag_size(workbuf->workint0);
+            file->ctz.size = lfs_tag_size(workbuf->worktag);
             file->flags |= LFS_F_INLINE;
             file->cache.block = file->ctz.head;
             file->cache.off = 0;
@@ -5289,7 +5287,6 @@ int lfs_file_opencfg_async(lfs_t *lfs, lfs_file_t *file,
         workbuf->_operationComplete = true;
         break;
     }
-
     return 0;
 
 cleanup:
@@ -5302,8 +5299,8 @@ cleanup:
 
 
 int lfs_file_open_async(lfs_t *lfs, lfs_file_t *file,
-                        const char *path, lfs_workbuffer * workbuf, uint8_t* operationState){
-    int err = lfs_file_opencfg_async(lfs, file, path, workbuf, operationState);
+                        char *path, int flags, lfs_workbuffer * workbuf, uint8_t* operationState){
+    int err = lfs_file_opencfg_async(lfs, file, path, flags, workbuf, operationState);
     return err;
 }
 

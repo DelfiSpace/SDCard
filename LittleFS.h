@@ -120,7 +120,7 @@ public:
     lfs_t _lfs; // The actual file system
     lfs_file_t workfile; //filebuffer
     lfs_workbuffer asyncBuffer;
-    char namebuffer[64];
+    char namebuffer[128];
 
     uint8_t writeBuffer[1024]; //twoblock writeBuffer;
     int writeSize; //number of bytes to write.

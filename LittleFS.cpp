@@ -102,7 +102,7 @@ void LittleFS::TaskRun(){
     case 3:
         //Case 3: Opening File
         //Console::log("OpenState: %d", asyncBuffer.operationState);
-        err = lfs_file_open_async(&_lfs, &workfile, asyncBuffer.workpath, &asyncBuffer, &asyncBuffer.operationState);
+        err = lfs_file_open_async(&_lfs, &workfile, asyncBuffer.workpath, asyncBuffer.workflags, &asyncBuffer, &asyncBuffer.operationState);
         if(err){
             Console::log("Opening Error: -%d", -err);
             asyncBuffer.operationState = 0;
@@ -120,7 +120,7 @@ void LittleFS::TaskRun(){
     case 4:
         //Case 4 5 6: Open Write Close
         //Console::log("OpenState: %d", asyncBuffer.operationState);
-        err = lfs_file_open_async(&_lfs, &workfile, asyncBuffer.workpath, &asyncBuffer, &asyncBuffer.operationState);
+        err = lfs_file_open_async(&_lfs, &workfile, asyncBuffer.workpath, asyncBuffer.workflags, &asyncBuffer, &asyncBuffer.operationState);
         if(err){
             Console::log("Opening Error: -%d", -err);
             asyncBuffer.operationState = 0;
@@ -412,8 +412,7 @@ int LittleFS::file_open_async(char *path, int flags)
         curOperation = 3; //open routine
         asyncBuffer.operationState = 0;
         asyncBuffer.workpath = namebuffer; //reset workpath position
-
-        snprintf(asyncBuffer.workpath, sizeof(namebuffer), "%s", path);
+        strcpy(asyncBuffer.workpath, path);
         Console::log("new WorkPath: %s", asyncBuffer.workpath);
         asyncBuffer.workflags = flags;
         asyncBuffer.workint0 = 0;
@@ -431,8 +430,8 @@ int LittleFS::file_open_write_close_async(char *path, int flags, const void *buf
     if(_mounted){
         curOperation = 4; //open/write/close routine
         asyncBuffer.workpath = namebuffer; //reset workpath position
-        snprintf(asyncBuffer.workpath, sizeof(namebuffer), "%s", path);
-//        Console::log("new WorkPath: %s", asyncBuffer.workpath);
+        strcpy(asyncBuffer.workpath, path);
+        Console::log("new WorkPath: %s", asyncBuffer.workpath);
         asyncBuffer.workflags = flags;
         asyncBuffer.workint0 = 0;
 
