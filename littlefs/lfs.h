@@ -667,7 +667,7 @@ int lfs_file_opencfg(lfs_t *lfs, lfs_file_t *file,
 
 
 //mounts filesystem and traverses entire tree to load gstate AND occupy lookahead
-int lfs_mount_async(lfs_t *lfs, const struct lfs_config *config, lfs_workbuffer* workbuf);
+int lfs_mount_async(lfs_t *lfs, const struct lfs_config *config, lfs_workbuffer* workbuf, uint8_t *state);
 int lfs_traverse_async(lfs_t *lfs, uint8_t *state, lfs_mdir_t* dir, lfs_block_t* cycle);
 
 // Open a file

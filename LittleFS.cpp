@@ -79,7 +79,7 @@ void LittleFS::TaskRun(){
     switch(curOperation){
     case 1:
         //Case 1: mounting SD Card
-        err = lfs_mount_async(&_lfs, &_config, &asyncBuffer);
+        err = lfs_mount_async(&_lfs, &_config, &asyncBuffer, &asyncBuffer.operationState);
         if(err){
             Console::log("Mounting Error: -%d", -err);
             asyncBuffer.operationState = 0;

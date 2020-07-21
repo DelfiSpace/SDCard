@@ -4158,35 +4158,52 @@ cleanup:
 }
 
 //includes occupying the lookahead buffer
-int lfs_mount_async(lfs_t *lfs, const struct lfs_config *cfg, lfs_workbuffer *workbuf) {
+int lfs_mount_async(lfs_t *lfs, const struct lfs_config *cfg, lfs_workbuffer *workbuf, uint8_t *state) {
+    LFS_TRACE("lfs_mount(%p, %p {.context=%p, "
+                ".read=%p, .prog=%p, .erase=%p, .sync=%p, "
+                ".read_size=%"PRIu32", .prog_size=%"PRIu32", "
+                ".block_size=%"PRIu32", .block_count=%"PRIu32", "
+                ".block_cycles=%"PRIu32", .cache_size=%"PRIu32", "
+                ".lookahead_size=%"PRIu32", .read_buffer=%p, "
+                ".prog_buffer=%p, .lookahead_buffer=%p, "
+                ".name_max=%"PRIu32", .file_max=%"PRIu32", "
+                ".attr_max=%"PRIu32"})",
+            (void*)lfs, (void*)cfg, cfg->context,
+            (void*)(uintptr_t)cfg->read, (void*)(uintptr_t)cfg->prog,
+            (void*)(uintptr_t)cfg->erase, (void*)(uintptr_t)cfg->sync,
+            cfg->read_size, cfg->prog_size, cfg->block_size, cfg->block_count,
+            cfg->block_cycles, cfg->cache_size, cfg->lookahead_size,
+            cfg->read_buffer, cfg->prog_buffer, cfg->lookahead_buffer,
+            cfg->name_max, cfg->file_max, cfg->attr_max);
+
     int err = 0;
-    lfs_mdir_t *dir_iterator = &workbuf->workdir;
-    lfs_block_t *cycle_iterator = &workbuf->workblock;
-    switch(workbuf->operationState){
+
+    switch(*state){
     case 0:
         err = lfs_init(lfs, cfg);
         if (err) {
             LFS_TRACE("lfs_mount -> %d", err);
             return err;
         }
-        *dir_iterator = {.tail = {0, 1}};
-        *cycle_iterator = 0;
 
-        workbuf->operationState = 1;
+        workbuf->workdir.tail[0] = 0;
+        workbuf->workdir.tail[1] = 1;
+        workbuf->workblock = 0;
+
+        *state = 1;
         break;
     case 1:
         // scan directory blocks for superblock and any global updates
-        if (!lfs_pair_isnull((*dir_iterator).tail)) {
-            if (*cycle_iterator >= lfs->cfg->block_count/2) {
+        if (!lfs_pair_isnull(workbuf->workdir.tail)) {
+            if (workbuf->workblock >= lfs->cfg->block_count/2) {
                 // loop detected
                 err = LFS_ERR_CORRUPT;
                 goto cleanup;
             }
-            *cycle_iterator += 1;
-
+            workbuf->workblock += 1;
 
             // fetch next block in tail list
-            lfs_stag_t tag = lfs_dir_fetchmatch(lfs, (dir_iterator), (*dir_iterator).tail,
+            lfs_stag_t tag = lfs_dir_fetchmatch(lfs, &workbuf->workdir, workbuf->workdir.tail,
                     LFS_MKTAG(0x7ff, 0x3ff, 0),
                     LFS_MKTAG(LFS_TYPE_SUPERBLOCK, 0, 8),
                     NULL,
@@ -4200,12 +4217,12 @@ int lfs_mount_async(lfs_t *lfs, const struct lfs_config *cfg, lfs_workbuffer *wo
             // has superblock?
             if (tag && !lfs_tag_isdelete(tag)) {
                 // update root
-                lfs->root[0] = (*dir_iterator).pair[0];
-                lfs->root[1] = (*dir_iterator).pair[1];
+                lfs->root[0] = workbuf->workdir.pair[0];
+                lfs->root[1] = workbuf->workdir.pair[1];
 
                 // grab superblock
                 lfs_superblock_t superblock;
-                tag = lfs_dir_get(lfs, dir_iterator, LFS_MKTAG(0x7ff, 0x3ff, 0),
+                tag = lfs_dir_get(lfs, &workbuf->workdir, LFS_MKTAG(0x7ff, 0x3ff, 0),
                         LFS_MKTAG(LFS_TYPE_INLINESTRUCT, 0, sizeof(superblock)),
                         &superblock);
                 if (tag < 0) {
@@ -4261,13 +4278,13 @@ int lfs_mount_async(lfs_t *lfs, const struct lfs_config *cfg, lfs_workbuffer *wo
             }
 
             // has gstate?
-            err = lfs_dir_getgstate(lfs, dir_iterator, &lfs->gstate);
+            err = lfs_dir_getgstate(lfs, &workbuf->workdir, &lfs->gstate);
             if (err) {
                 goto cleanup;
             }
-            break;
+        }else{
+            *state = 2;
         }
-        workbuf->operationState = 2;
         break;
     case 2:
         // found superblock?
@@ -4288,33 +4305,20 @@ int lfs_mount_async(lfs_t *lfs, const struct lfs_config *cfg, lfs_workbuffer *wo
 
         // setup free lookahead
         lfs_alloc_reset(lfs);
-        workbuf->operationState = 3;
 
-        break;
-    case 3:
-        //init lookahead buffer
-        int (*cb)(void *data, lfs_block_t block) = lfs_alloc_lookahead;
-        lfs->free.off = (lfs->free.off + lfs->free.size)
-                       % lfs->cfg->block_count;
-        lfs->free.size = lfs_min(8*lfs->cfg->lookahead_size, lfs->free.ack);
-        lfs->free.i = 0;
-
-        // find mask of free blocks from tree
-        memset(lfs->free.buffer, 0, lfs->cfg->lookahead_size);
-        workbuf->operationState = 4;
-        workbuf->traverse_state = 0;
-        break;
-    case 4:
-        lfs_fs_traverseraw_async(lfs, lfs_alloc_lookahead, lfs, true, workbuf, &workbuf->traverse_state);
+        LFS_TRACE("lfs_mount -> %d", 0);
         workbuf->_operationComplete = true;
+        break;
     }
-
     return 0;
 
 cleanup:
     lfs_unmount(lfs);
+    LFS_TRACE("lfs_mount -> %d", err);
     return err;
 }
+
+
 int lfs_unmount(lfs_t *lfs) {
     LFS_TRACE("lfs_unmount(%p)", (void*)lfs);
     int err = lfs_deinit(lfs);
