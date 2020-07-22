@@ -2565,6 +2565,58 @@ static int lfs_ctz_traverse(lfs_t *lfs,
     }
 }
 
+static int lfs_ctz_traverse_async(lfs_t *lfs,
+        const lfs_cache_t *pcache, lfs_cache_t *rcache,
+        lfs_block_t head, lfs_size_t size,
+        int (*cb)(void*, lfs_block_t), void *data, lfs_workbuffer *workbuf, uint8_t *state) {
+    //workint2 is used as index counter
+
+
+    if (size == 0) {
+        return 0;
+    }
+
+    switch(*state){
+    case 0:
+        workbuf->workint2 = lfs_ctz_index(lfs, &(lfs_off_t){size-1});
+        workbuf->workhead = head;
+        *state = 1;
+        break;
+    case 1:
+        if(workbuf->workint2 != 0){
+            int err = cb(data, workbuf->workhead);
+            if (err) {
+                return err;
+            }
+            lfs_block_t heads[2];
+            int count = 2 - (workbuf->workint2 & 1);
+            err = lfs_bd_read(lfs,
+                    pcache, rcache, count*sizeof(workbuf->workhead ),
+                    workbuf->workhead , 0, &heads, count*sizeof(workbuf->workhead ));
+            heads[0] = lfs_fromle32(heads[0]);
+            heads[1] = lfs_fromle32(heads[1]);
+            if (err) {
+                return err;
+            }
+
+            for (int i = 0; i < count-1; i++) {
+                err = cb(data, heads[i]);
+                if (err) {
+                    return err;
+                }
+            }
+
+            workbuf->workhead  = heads[count-1];
+            workbuf->workint2 -= count;
+        }else{
+            workbuf->_operationComplete = true;
+        }
+        break;
+    }
+    return 0;
+}
+
+
 /// Top level file operations ///
 int lfs_file_opencfg(lfs_t *lfs, lfs_file_t *file,
         const char *path, int flags,
@@ -4464,39 +4516,57 @@ int lfs_fs_traverseraw_async(lfs_t *lfs,
                 return err;
             }
 
-            for (uint16_t id = 0; id < (*dir).count; id++) {
-                struct lfs_ctz ctz;
-                lfs_stag_t tag = lfs_dir_get(lfs, dir, LFS_MKTAG(0x700, 0x3ff, 0),
-                        LFS_MKTAG(LFS_TYPE_STRUCT, id, sizeof(ctz)), &ctz);
-                if (tag < 0) {
-                    if (tag == LFS_ERR_NOENT) {
-                        continue;
-                    }
-                    return tag;
-                }
-                lfs_ctz_fromle32(&ctz);
+            workbuf->workuint0 = 0;
+            *state = 2;
 
-                if (lfs_tag_type3(tag) == LFS_TYPE_CTZSTRUCT) {
-                    err = lfs_ctz_traverse(lfs, NULL, &lfs->rcache,
-                            ctz.head, ctz.size, cb, data);
+        }else{
+            *state = 4;
+        }
+        break;
+    case 2:
+        if (workbuf->workuint0 < (*dir).count) {
+            lfs_stag_t tag = lfs_dir_get(lfs, dir, LFS_MKTAG(0x700, 0x3ff, 0),
+                    LFS_MKTAG(LFS_TYPE_STRUCT, workbuf->workuint0, sizeof(workbuf->workctz)), &workbuf->workctz);
+            if (tag < 0) {
+                if (tag == LFS_ERR_NOENT) {
+                    workbuf->workuint0++;
+                    break;
+                }
+                return tag;
+            }
+            workbuf->workuint0++;
+
+            lfs_ctz_fromle32(&workbuf->workctz);
+
+            if (lfs_tag_type3(tag) == LFS_TYPE_CTZSTRUCT) {
+                workbuf->ctz_traverse_state = 0;
+                *state = 3;
+                break;
+            } else if (includeorphans &&
+                    lfs_tag_type3(tag) == LFS_TYPE_DIRSTRUCT) {
+                for (int i = 0; i < 2; i++) {
+                    int err = cb(data, (&workbuf->workctz.head)[i]);
                     if (err) {
                         return err;
-                    }
-                } else if (includeorphans &&
-                        lfs_tag_type3(tag) == LFS_TYPE_DIRSTRUCT) {
-                    for (int i = 0; i < 2; i++) {
-                        err = cb(data, (&ctz.head)[i]);
-                        if (err) {
-                            return err;
-                        }
                     }
                 }
             }
         }else{
+            *state = 1;
+        }
+        break;
+    case 3:
+        int err = lfs_ctz_traverse_async(lfs, NULL, &lfs->rcache,
+               workbuf->workctz.head, workbuf->workctz.size, cb, data, workbuf, &workbuf->ctz_traverse_state);
+        if (err) {
+            return err;
+        }
+        if(workbuf->_operationComplete){
+            workbuf->_operationComplete = false;
             *state = 2;
         }
         break;
-    case 2:
+    case 4:
         // iterate over any open files
         for (lfs_file_t *f = (lfs_file_t*)lfs->mlist; f; f = f->next) {
             if (f->type != LFS_TYPE_REG) {

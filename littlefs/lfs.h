@@ -640,6 +640,9 @@ struct lfs_workbuffer {
     uint8_t alloc_state = 0; //dedicated state counter for allocation as it is used so often.
     uint8_t traverse_state = 0;
     lfs_block_t workcycle = 0;
+    uint8_t ctz_traverse_state = 0;
+    lfs_block_t workhead = 0;
+    struct lfs_ctz workctz;
 };
 
 // Open a file
