@@ -4865,9 +4865,7 @@ static int lfs_ctz_extend_async(lfs_t *lfs,
         if (err) {
             return err;
         }
-        *state = 2;
-        break;
-    case 2:
+
         err = lfs_bd_erase(lfs, workbuf->workblock);
         if (err) {
             if (err == LFS_ERR_CORRUPT) {
@@ -4881,6 +4879,7 @@ static int lfs_ctz_extend_async(lfs_t *lfs,
         if (size == 0) {
             *block = workbuf->workblock;
             *off = 0;
+            workbuf->_operationComplete = true;
             return 0;
         }
 
@@ -4914,6 +4913,7 @@ static int lfs_ctz_extend_async(lfs_t *lfs,
 
             *block = workbuf->workblock;
             *off = noff;
+            workbuf->_operationComplete = true;
             return 0;
         }
 
@@ -4930,7 +4930,7 @@ static int lfs_ctz_extend_async(lfs_t *lfs,
                 if (err == LFS_ERR_CORRUPT) {
                     lfs_cache_drop(lfs, pcache);
                     *state = 1;
-                    return 0;;
+                    return 0;
                 }
                 return err;
             }
@@ -5027,6 +5027,9 @@ lfs_ssize_t lfs_file_write_async(lfs_t *lfs, lfs_file_t *file,
                 LFS_TRACE("lfs_file_write -> %d", err);
                 return err;
             }
+        }else{
+            //no need to outline something thats not inlined.
+            *state = 3;
         }
         if(workbuf->_operationComplete){
             workbuf->_operationComplete = false;
@@ -5061,6 +5064,11 @@ lfs_ssize_t lfs_file_write_async(lfs_t *lfs, lfs_file_t *file,
                         file->block, file->pos,
                         &file->block, &file->off,
                         workbuf, (uint8_t*) &workbuf->workint1);
+//                int err = lfs_ctz_extend(lfs, &file->cache, &lfs->rcache,
+//                        file->block, file->pos,
+//                        &file->block, &file->off);
+//                workbuf->_operationComplete = true;
+
                 if (err) {
                     file->flags |= LFS_F_ERRED;
                     LFS_TRACE("lfs_file_write -> %d", err);
