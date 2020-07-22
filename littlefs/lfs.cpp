@@ -4305,9 +4305,29 @@ int lfs_mount_async(lfs_t *lfs, const struct lfs_config *cfg, lfs_workbuffer *wo
 
         // setup free lookahead
         lfs_alloc_reset(lfs);
-
+        lfs->free.size = lfs_min(8*lfs->cfg->lookahead_size, lfs->free.ack);
+        lfs->free.off = (lfs->free.off + lfs->free.size)
+                        % lfs->cfg->block_count;
+        lfs->free.i = 0;
+        memset(lfs->free.buffer, 0, lfs->cfg->lookahead_size);
+        workbuf->traverse_state = 0;
         LFS_TRACE("lfs_mount -> %d", 0);
-        workbuf->_operationComplete = true;
+        *state = 3;
+        //workbuf->_operationComplete = true;
+        break;
+    case 3:
+        // allocate lookahead:
+        int err = lfs_fs_traverseraw_async(lfs, lfs_alloc_lookahead, lfs, true, workbuf, &workbuf->traverse_state);
+        //int err = lfs_fs_traverseraw(lfs, lfs_alloc_lookahead, lfs, true);
+        //workbuf->_operationComplete = true;
+        if (err) {
+            lfs_alloc_reset(lfs);
+            return err;
+        }
+        if(workbuf->_operationComplete == true){
+            workbuf->_operationComplete = true;
+            *state = 0;
+        }
         break;
     }
     return 0;
