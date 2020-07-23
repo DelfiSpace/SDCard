@@ -14,7 +14,7 @@
 #include "Task.h"
 #include "Console.h"
 
-#define LFS_BLOCK_SIZE  512
+#define LFS_BLOCK_SIZE  10*512 //lower amount of blocks, faster lookahead allocation
 #define LFS_READ_SIZE   512
 #define LFS_PROG_SIZE   512
 #define LFS_CACHE_SIZE  512
