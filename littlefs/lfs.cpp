@@ -5507,7 +5507,7 @@ int lfs_file_opencfg_async(lfs_t *lfs, lfs_file_t *file,
             goto cleanup;
         }
 
-        if (workbuf->_operationComplete = true){
+        if (workbuf->_operationComplete == true){
             workbuf->_operationComplete = false;
             workbuf->worktag = LFS_MKTAG(LFS_TYPE_INLINESTRUCT, 0, 0);
             *state = 5;
