@@ -2093,6 +2093,205 @@ compact:
     return 0;
 }
 
+static int lfs_dir_commit_async(lfs_t *lfs, lfs_mdir_t *dir,
+        const struct lfs_mattr *attrs, int attrcount, lfs_workbuffer *workbuf, uint8_t *state) {
+
+    switch(*state){
+    case 0:
+        // check for any inline files that aren't RAM backed and
+        // forcefully evict them, needed for filesystem consistency
+        for (lfs_file_t *f = (lfs_file_t*)lfs->mlist; f; f = f->next) {
+            if (dir != &f->m && lfs_pair_cmp(f->m.pair, dir->pair) == 0 &&
+                    f->type == LFS_TYPE_REG && (f->flags & LFS_F_INLINE) &&
+                    f->ctz.size > lfs->cfg->cache_size) {
+                int err = lfs_file_outline(lfs, f);
+                if (err) {
+                    return err;
+                }
+
+                err = lfs_file_flush(lfs, f);
+                if (err) {
+                    return err;
+                }
+            }
+        }
+
+        *state = 1;
+        break;
+    case 1:
+        // calculate changes to the directory
+        lfs_mdir_t olddir = *dir;
+        bool hasdelete = false;
+        for (int i = 0; i < attrcount; i++) {
+            if (lfs_tag_type3(attrs[i].tag) == LFS_TYPE_CREATE) {
+                dir->count += 1;
+            } else if (lfs_tag_type3(attrs[i].tag) == LFS_TYPE_DELETE) {
+    //            LFS_ASSERT(dir->count > 0);
+                dir->count -= 1;
+                hasdelete = true;
+            } else if (lfs_tag_type1(attrs[i].tag) == LFS_TYPE_TAIL) {
+                dir->tail[0] = ((lfs_block_t*)attrs[i].buffer)[0];
+                dir->tail[1] = ((lfs_block_t*)attrs[i].buffer)[1];
+                dir->split = (lfs_tag_chunk(attrs[i].tag) & 1);
+                lfs_pair_fromle32(dir->tail);
+            }
+        }
+
+        // should we actually drop the directory block?
+        if (hasdelete && dir->count == 0) {
+            lfs_mdir_t pdir;
+            int err = lfs_fs_pred(lfs, dir->pair, &pdir);
+            if (err && err != LFS_ERR_NOENT) {
+                *dir = olddir;
+                return err;
+            }
+
+            if (err != LFS_ERR_NOENT && pdir.split) {
+                err = lfs_dir_drop(lfs, &pdir, dir);
+                if (err) {
+                    *dir = olddir;
+                    return err;
+                }
+            }
+        }
+
+        if (dir->erased || dir->count >= 0xff) {
+            // try to commit
+            struct lfs_commit commit = {
+                .block = dir->pair[0],
+                .off = dir->off,
+                .ptag = dir->etag,
+                .crc = 0xffffffff,
+
+                .begin = dir->off,
+                .end = lfs->cfg->block_size - 8,
+            };
+
+            // traverse attrs that need to be written out
+            lfs_pair_tole32(dir->tail);
+            int err = lfs_dir_traverse(lfs,
+                    dir, dir->off, dir->etag, attrs, attrcount,
+                    0, 0, 0, 0, 0,
+                    lfs_dir_commit_commit, &(struct lfs_dir_commit_commit){
+                        lfs, &commit});
+            lfs_pair_fromle32(dir->tail);
+            if (err) {
+                if (err == LFS_ERR_NOSPC || err == LFS_ERR_CORRUPT) {
+                    goto compact;
+                }
+                *dir = olddir;
+                return err;
+            }
+
+            // commit any global diffs if we have any
+            lfs_gstate_t delta = {0};
+            lfs_gstate_xor(&delta, &lfs->gstate);
+            lfs_gstate_xor(&delta, &lfs->gdisk);
+            lfs_gstate_xor(&delta, &lfs->gdelta);
+            delta.tag &= ~LFS_MKTAG(0, 0, 0x3ff);
+            if (!lfs_gstate_iszero(&delta)) {
+                err = lfs_dir_getgstate(lfs, dir, &delta);
+                if (err) {
+                    *dir = olddir;
+                    return err;
+                }
+
+                lfs_gstate_tole32(&delta);
+                err = lfs_dir_commitattr(lfs, &commit,
+                        LFS_MKTAG(LFS_TYPE_MOVESTATE, 0x3ff,
+                            sizeof(delta)), &delta);
+                if (err) {
+                    if (err == LFS_ERR_NOSPC || err == LFS_ERR_CORRUPT) {
+                        goto compact;
+                    }
+                    *dir = olddir;
+                    return err;
+                }
+            }
+
+            // finalize commit with the crc
+            err = lfs_dir_commitcrc(lfs, &commit);
+            if (err) {
+                if (err == LFS_ERR_NOSPC || err == LFS_ERR_CORRUPT) {
+                    goto compact;
+                }
+                *dir = olddir;
+                return err;
+            }
+
+            // successful commit, update dir
+    //        LFS_ASSERT(commit.off % lfs->cfg->prog_size == 0);
+            dir->off = commit.off;
+            dir->etag = commit.ptag;
+            // and update gstate
+            lfs->gdisk = lfs->gstate;
+            lfs->gdelta = (lfs_gstate_t){0};
+        } else {
+    compact:
+            // fall back to compaction
+            lfs_cache_drop(lfs, &lfs->pcache);
+
+            int err = lfs_dir_compact(lfs, dir, attrs, attrcount,
+                    dir, 0, dir->count);
+            if (err) {
+                *dir = olddir;
+                return err;
+            }
+        }
+
+        *state = 2;
+        break;
+    case 2:
+        // this complicated bit of logic is for fixing up any active
+        // metadata-pairs that we may have affected
+        //
+        // note we have to make two passes since the mdir passed to
+        // lfs_dir_commit could also be in this list, and even then
+        // we need to copy the pair so they don't get clobbered if we refetch
+        // our mdir.
+        for (lfs_mlist_t *d = lfs->mlist; d; d = d->next) {
+            if (&d->m != dir && lfs_pair_cmp(d->m.pair, olddir.pair) == 0) {
+                d->m = *dir;
+                for (int i = 0; i < attrcount; i++) {
+                    if (lfs_tag_type3(attrs[i].tag) == LFS_TYPE_DELETE &&
+                            d->id == lfs_tag_id(attrs[i].tag)) {
+                        d->m.pair[0] = LFS_BLOCK_NULL;
+                        d->m.pair[1] = LFS_BLOCK_NULL;
+                    } else if (lfs_tag_type3(attrs[i].tag) == LFS_TYPE_DELETE &&
+                            d->id > lfs_tag_id(attrs[i].tag)) {
+                        d->id -= 1;
+                        if (d->type == LFS_TYPE_DIR) {
+                            ((lfs_dir_t*)d)->pos -= 1;
+                        }
+                    } else if (lfs_tag_type3(attrs[i].tag) == LFS_TYPE_CREATE &&
+                            d->id >= lfs_tag_id(attrs[i].tag)) {
+                        d->id += 1;
+                        if (d->type == LFS_TYPE_DIR) {
+                            ((lfs_dir_t*)d)->pos += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        for (lfs_mlist_t *d = lfs->mlist; d; d = d->next) {
+            if (lfs_pair_cmp(d->m.pair, olddir.pair) == 0) {
+                while (d->id >= d->m.count && d->m.split) {
+                    // we split and id is on tail now
+                    d->id -= d->m.count;
+                    int err = lfs_dir_fetch(lfs, &d->m, d->m.tail);
+                    if (err) {
+                        return err;
+                    }
+                }
+            }
+        }
+        workbuf->_operationComplete = true;
+    }
+
+    return 0;
+}
+
 
 /// Top level directory operations ///
 int lfs_mkdir(lfs_t *lfs, const char *path) {
@@ -5265,6 +5464,7 @@ int lfs_file_opencfg_async(lfs_t *lfs, lfs_file_t *file,
 
         if(workbuf->_operationComplete == true){
             workbuf->_operationComplete = false;
+            workbuf->workint0 = 0;
             *state = 2;
         }
         break;
@@ -5288,19 +5488,34 @@ int lfs_file_opencfg_async(lfs_t *lfs, lfs_file_t *file,
                 err = LFS_ERR_NAMETOOLONG;
                 goto cleanup;
             }
+            *state = 3;
+            break;
 
-            // get next slot and create entry to remember name
-            err = lfs_dir_commit(lfs, &file->m, LFS_MKATTRS(
-                    {LFS_MKTAG(LFS_TYPE_CREATE, file->id, 0), NULL},
-                    {LFS_MKTAG(LFS_TYPE_REG, file->id, nlen), path},
-                    {LFS_MKTAG(LFS_TYPE_INLINESTRUCT, file->id, 0), NULL}));
-            if (err) {
-                err = LFS_ERR_NAMETOOLONG;
-                goto cleanup;
-            }
+        }else{
+            *state = 4;
+            break;
+        }
+    case 3:
+        lfs_size_t nlen = strlen(path);
+        // get next slot and create entry to remember name
+        err = lfs_dir_commit_async(lfs, &file->m, LFS_MKATTRS(
+                {LFS_MKTAG(LFS_TYPE_CREATE, file->id, 0), NULL},
+                {LFS_MKTAG(LFS_TYPE_REG, file->id, nlen), path},
+                {LFS_MKTAG(LFS_TYPE_INLINESTRUCT, file->id, 0), NULL}), workbuf, (uint8_t*) &workbuf->workint0);
+        if (err) { //99 means still processing
+            err = LFS_ERR_NAMETOOLONG;
+            goto cleanup;
+        }
 
+        if (workbuf->_operationComplete = true){
+            workbuf->_operationComplete = false;
             workbuf->worktag = LFS_MKTAG(LFS_TYPE_INLINESTRUCT, 0, 0);
-        } else if (flags & LFS_O_EXCL) {
+            *state = 5;
+        }
+        break;
+
+    case 4:
+        if (flags & LFS_O_EXCL) {
             err = LFS_ERR_EXIST;
             goto cleanup;
         } else if (lfs_tag_type3(workbuf->worktag) != LFS_TYPE_REG) {
@@ -5320,7 +5535,9 @@ int lfs_file_opencfg_async(lfs_t *lfs, lfs_file_t *file,
             }
             lfs_ctz_fromle32(&file->ctz);
         }
-
+        *state = 5;
+        break;
+    case 5:
         // fetch attrs
         for (unsigned i = 0; i < file->cfg->attr_count; i++) {
             if ((file->flags & 3) != LFS_O_WRONLY) {

@@ -129,7 +129,7 @@ void LittleFS::TaskRun(){
         break;
     case FileSystemOperation::Open:
         //Case 3: Opening File
-        //Console::log("OpenState: %d", asyncBuffer.operationState);
+        Console::log("OpenState: %d", asyncBuffer.operationState);
         err = lfs_file_open_async(&_lfs, &workfile, asyncBuffer.workpath, asyncBuffer.workflags, &asyncBuffer, &asyncBuffer.operationState);
         if(err){
             Console::log("Opening Error: -%d", -err);
@@ -151,7 +151,7 @@ void LittleFS::TaskRun(){
         break;
     case FileSystemOperation::OWC:
         //Case 4 5 6: Open Write Close
-        //Console::log("OpenState: %d", asyncBuffer.operationState);
+        Console::log("OpenState: %d", asyncBuffer.operationState);
         err = lfs_file_open_async(&_lfs, &workfile, asyncBuffer.workpath, asyncBuffer.workflags, &asyncBuffer, &asyncBuffer.operationState);
         if(err){
             Console::log("Opening Error: -%d", -err);
