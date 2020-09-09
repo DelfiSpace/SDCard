@@ -622,6 +622,8 @@ int lfs_fs_traverse(lfs_t *lfs, int (*cb)(void*, lfs_block_t), void *data);
 struct lfs_workbuffer {
     lfs_t *_lfs; // The actual file system
     lfs_file_t *workfile;
+    lfs_file_t *bufferFile;
+    lfs_mlist_t *buffermlist;
     lfs_mdir_t workdir;
     lfs_block_t workblock;
     lfs_stag_t worktag;

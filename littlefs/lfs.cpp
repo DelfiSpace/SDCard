@@ -2098,27 +2098,35 @@ static int lfs_dir_commit_async(lfs_t *lfs, lfs_mdir_t *dir,
 
     switch(*state){
     case 0:
-        // check for any inline files that aren't RAM backed and
-        // forcefully evict them, needed for filesystem consistency
-        for (lfs_file_t *f = (lfs_file_t*)lfs->mlist; f; f = f->next) {
-            if (dir != &f->m && lfs_pair_cmp(f->m.pair, dir->pair) == 0 &&
-                    f->type == LFS_TYPE_REG && (f->flags & LFS_F_INLINE) &&
-                    f->ctz.size > lfs->cfg->cache_size) {
-                int err = lfs_file_outline(lfs, f);
-                if (err) {
-                    return err;
-                }
-
-                err = lfs_file_flush(lfs, f);
-                if (err) {
-                    return err;
-                }
-            }
-        }
-
+        workbuf->bufferFile = (lfs_file_t*)lfs->mlist;
         *state = 1;
         break;
     case 1:
+        // check for any inline files that aren't RAM backed and
+        // forcefully evict them, needed for filesystem consistency
+        //for (lfs_file_t *f = (lfs_file_t*)lfs->mlist; f; f = f->next) {
+        lfs_file_t *f = workbuf->bufferFile;
+        if (dir != &f->m && lfs_pair_cmp(f->m.pair, dir->pair) == 0 &&
+                f->type == LFS_TYPE_REG && (f->flags & LFS_F_INLINE) &&
+                f->ctz.size > lfs->cfg->cache_size) {
+            int err = lfs_file_outline(lfs, f);
+            if (err) {
+                return err;
+            }
+
+            err = lfs_file_flush(lfs, f);
+            if (err) {
+                return err;
+            }
+        }
+
+        workbuf->bufferFile = f->next;
+        if(!workbuf->bufferFile){
+            *state = 2;
+        }
+        break;
+
+    case 2:
         // calculate changes to the directory
         lfs_mdir_t olddir = *dir;
         bool hasdelete = false;
@@ -2239,9 +2247,10 @@ static int lfs_dir_commit_async(lfs_t *lfs, lfs_mdir_t *dir,
             }
         }
 
-        *state = 2;
+        *state = 3;
+        workbuf->buffermlist = lfs->mlist;
         break;
-    case 2:
+    case 3:
         // this complicated bit of logic is for fixing up any active
         // metadata-pairs that we may have affected
         //
@@ -2249,44 +2258,59 @@ static int lfs_dir_commit_async(lfs_t *lfs, lfs_mdir_t *dir,
         // lfs_dir_commit could also be in this list, and even then
         // we need to copy the pair so they don't get clobbered if we refetch
         // our mdir.
-        for (lfs_mlist_t *d = lfs->mlist; d; d = d->next) {
-            if (&d->m != dir && lfs_pair_cmp(d->m.pair, olddir.pair) == 0) {
-                d->m = *dir;
-                for (int i = 0; i < attrcount; i++) {
-                    if (lfs_tag_type3(attrs[i].tag) == LFS_TYPE_DELETE &&
-                            d->id == lfs_tag_id(attrs[i].tag)) {
-                        d->m.pair[0] = LFS_BLOCK_NULL;
-                        d->m.pair[1] = LFS_BLOCK_NULL;
-                    } else if (lfs_tag_type3(attrs[i].tag) == LFS_TYPE_DELETE &&
-                            d->id > lfs_tag_id(attrs[i].tag)) {
-                        d->id -= 1;
-                        if (d->type == LFS_TYPE_DIR) {
-                            ((lfs_dir_t*)d)->pos -= 1;
-                        }
-                    } else if (lfs_tag_type3(attrs[i].tag) == LFS_TYPE_CREATE &&
-                            d->id >= lfs_tag_id(attrs[i].tag)) {
-                        d->id += 1;
-                        if (d->type == LFS_TYPE_DIR) {
-                            ((lfs_dir_t*)d)->pos += 1;
-                        }
+        //for (lfs_mlist_t *d = lfs->mlist; d; d = d->next) {
+        lfs_mlist_t *d = workbuf->buffermlist;
+        if (&d->m != dir && lfs_pair_cmp(d->m.pair, olddir.pair) == 0) {
+            d->m = *dir;
+            for (int i = 0; i < attrcount; i++) {
+                if (lfs_tag_type3(attrs[i].tag) == LFS_TYPE_DELETE &&
+                        d->id == lfs_tag_id(attrs[i].tag)) {
+                    d->m.pair[0] = LFS_BLOCK_NULL;
+                    d->m.pair[1] = LFS_BLOCK_NULL;
+                } else if (lfs_tag_type3(attrs[i].tag) == LFS_TYPE_DELETE &&
+                        d->id > lfs_tag_id(attrs[i].tag)) {
+                    d->id -= 1;
+                    if (d->type == LFS_TYPE_DIR) {
+                        ((lfs_dir_t*)d)->pos -= 1;
+                    }
+                } else if (lfs_tag_type3(attrs[i].tag) == LFS_TYPE_CREATE &&
+                        d->id >= lfs_tag_id(attrs[i].tag)) {
+                    d->id += 1;
+                    if (d->type == LFS_TYPE_DIR) {
+                        ((lfs_dir_t*)d)->pos += 1;
                     }
                 }
             }
         }
 
-        for (lfs_mlist_t *d = lfs->mlist; d; d = d->next) {
-            if (lfs_pair_cmp(d->m.pair, olddir.pair) == 0) {
-                while (d->id >= d->m.count && d->m.split) {
-                    // we split and id is on tail now
-                    d->id -= d->m.count;
-                    int err = lfs_dir_fetch(lfs, &d->m, d->m.tail);
-                    if (err) {
-                        return err;
-                    }
+        workbuf->buffermlist = d->next;
+        if(!workbuf->buffermlist){
+            //end of loop;
+            workbuf->buffermlist = lfs->mlist;
+            *state = 4;
+        }
+//        }
+        break;
+    case 4:
+
+//        for (lfs_mlist_t *d = lfs->mlist; d; d = d->next) {
+        lfs_mlist_t *e = workbuf->buffermlist;
+        if (lfs_pair_cmp(e->m.pair, olddir.pair) == 0) {
+            while (e->id >= e->m.count && e->m.split) {
+                // we split and id is on tail now
+                e->id -= e->m.count;
+                int err = lfs_dir_fetch(lfs, &e->m, e->m.tail);
+                if (err) {
+                    return err;
                 }
             }
         }
-        workbuf->_operationComplete = true;
+        workbuf->buffermlist = e->next;
+        if(!workbuf->buffermlist){
+            //end of loop;
+            workbuf->_operationComplete = true;
+        }
+        break;
     }
 
     return 0;
