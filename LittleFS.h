@@ -21,10 +21,14 @@
 #define LFS_LOOKAHEAD   8192 //10*8192
 #define LFS_BLOCKCYCLES -1
 
+#define MAX_TASKS       10
+
 typedef signed   int  ssize_t;  ///< Signed size type, usually encodes negative errors
 typedef unsigned int  size_t;
 typedef signed   long off_t;    ///< Offset in a data stream
 typedef unsigned long long fsblkcnt_t;  ///< Count of file system blocks
+
+typedef enum FileSystemOperation {Mount = 1, Open = 3, OWC = 4, Write = 5, Close = 6} FileSystemOperation;
 
 typedef struct statvfs {
      unsigned long  f_bsize;    ///< Filesystem block size
@@ -35,6 +39,17 @@ typedef struct statvfs {
      unsigned long  f_fsid;     ///< Filesystem ID
      unsigned long  f_namemax;  ///< Maximum filename length
  } statvfs_t;
+
+ typedef struct LFSTask {
+     char taskNameBuf[64];
+     lfs_file_t* taskFile;
+     uint8_t* taskArray;
+     uint8_t taskOperation;
+     uint8_t taskSize;
+     int taskFlags;
+     bool taskCompleted;
+     int taskResult;
+ } LFSTask;
 
 class LittleFS : public Task{
 public:
@@ -137,6 +152,8 @@ public:
 
     uint8_t curOperation = 0; //0: idle, 1: mounting, 2: formatting, 3: writing, 4: reading
 
+    int queTask(LFSTask &newTask);
+
 private:
     struct lfs_config _config;
     SDCard *_bd; // The block device
@@ -144,6 +161,11 @@ private:
     uint8_t readBuf[LFS_READ_SIZE];
     uint8_t progBuf[LFS_PROG_SIZE];
     uint8_t lkahBuf[LFS_LOOKAHEAD];
+
+    LFSTask *taskQue[MAX_TASKS];
+    LFSTask* curTask;
+    uint8_t taskQuePointer = 0;
+    uint8_t tasksInQue = 0;
 
     // default parameters
     const lfs_size_t _read_size;

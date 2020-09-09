@@ -64,20 +64,52 @@ LittleFS::~LittleFS()
     //unmount();
 }
 
-bool LittleFS::notified(){
-    if(curOperation != 0){
-        return true;
-    }else{
-        return false;
+int LittleFS::queTask(LFSTask &newTask){
+    if(tasksInQue < MAX_TASKS)
+    {
+        taskQue[taskQuePointer] = &newTask;
+        tasksInQue++;
+        taskQuePointer = (taskQuePointer + 1) % MAX_TASKS;
+        return 1;
     }
+    else
+    {
+        return 0;
+    }
+}
+
+bool LittleFS::notified(){
+    return curOperation || tasksInQue;
 }
 
 
 void LittleFS::TaskRun(){
 //    Console::log("FileSystemTask: %d", curOperation);
+    if(curOperation == 0 && tasksInQue > 0){
+        Console::log("Get Task From Queue!");
+
+        uint8_t curTaskPointer = (taskQuePointer-tasksInQue)<0 ? ((taskQuePointer-tasksInQue)%MAX_TASKS+MAX_TASKS)%MAX_TASKS : (taskQuePointer-tasksInQue)%MAX_TASKS;
+        curTask = taskQue[curTaskPointer];
+        tasksInQue--;
+
+        switch(curTask->taskOperation){
+        case FileSystemOperation::Mount:
+            //todo
+            break;
+        case FileSystemOperation::OWC:
+            this->file_open_write_close_async(curTask->taskNameBuf, curTask->taskFlags, curTask->taskArray, curTask->taskSize);
+            break;
+        default:
+            Console::log("TODO!!");
+            break;
+        }
+    }
+
+
+
     int err = 0;
     switch(curOperation){
-    case 1:
+    case FileSystemOperation::Mount:
         //Case 1: mounting SD Card
         err = lfs_mount_async(&_lfs, &_config, &asyncBuffer, &asyncBuffer.operationState);
         if(err){
@@ -95,11 +127,7 @@ void LittleFS::TaskRun(){
             _mounted = true;
         }
         break;
-    case 2:
-        //Case 2: Format SD Card
-        //todo
-        break;
-    case 3:
+    case FileSystemOperation::Open:
         //Case 3: Opening File
         //Console::log("OpenState: %d", asyncBuffer.operationState);
         err = lfs_file_open_async(&_lfs, &workfile, asyncBuffer.workpath, asyncBuffer.workflags, &asyncBuffer, &asyncBuffer.operationState);
@@ -108,6 +136,8 @@ void LittleFS::TaskRun(){
             asyncBuffer.operationState = 0;
             curOperation = 0;
             _err = err;
+            curTask->taskCompleted = true;
+            curTask->taskResult = err;
         }
         if(asyncBuffer._operationComplete){
             Console::log("File Opened.");
@@ -115,9 +145,11 @@ void LittleFS::TaskRun(){
             curOperation = 0;
             asyncBuffer._operationComplete = false;
             _opened = true;
+            curTask->taskCompleted = true;
+            curTask->taskResult = err;
         }
         break;
-    case 4:
+    case FileSystemOperation::OWC:
         //Case 4 5 6: Open Write Close
         //Console::log("OpenState: %d", asyncBuffer.operationState);
         err = lfs_file_open_async(&_lfs, &workfile, asyncBuffer.workpath, asyncBuffer.workflags, &asyncBuffer, &asyncBuffer.operationState);
@@ -126,6 +158,8 @@ void LittleFS::TaskRun(){
             asyncBuffer.operationState = 0;
             curOperation = 0;
             _err = err;
+            curTask->taskCompleted = true;
+            curTask->taskResult = err;
         }
         if(asyncBuffer._operationComplete){
             Console::log("Opened.");
@@ -135,7 +169,7 @@ void LittleFS::TaskRun(){
             _opened = true;
         }
         break;
-    case 5:
+    case FileSystemOperation::Write:
         //Case 4 5 6: Open Write Close
         //Console::log("WriteState: %d", asyncBuffer.operationState);
         err = lfs_file_write_async(&_lfs, &workfile, writeBuffer, writeSize, &asyncBuffer, &asyncBuffer.operationState);
@@ -144,6 +178,8 @@ void LittleFS::TaskRun(){
             asyncBuffer.operationState = 0;
             curOperation = 0;
             _err = err;
+            curTask->taskCompleted = true;
+            curTask->taskResult = err;
         }
         else if(asyncBuffer._operationComplete){
             Console::log("Written.");
@@ -152,16 +188,20 @@ void LittleFS::TaskRun(){
             asyncBuffer._operationComplete = false;
         }
         break;
-    case 6:
+    case FileSystemOperation::Close:
         err = file_close(&workfile);
         if(err){
             Console::log("Close Error: -%d", -err);
             asyncBuffer.operationState = 0;
             curOperation = 0;
+            curTask->taskCompleted = true;
+            curTask->taskResult = err;
             _err = err;
         }else{
             curOperation = 0;
             Console::log("OWC Succes!");
+            curTask->taskCompleted = true;
+            curTask->taskResult = err;
         }
         break;
     default:
