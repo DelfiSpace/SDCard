@@ -14,7 +14,7 @@
 #include "Task.h"
 #include "Console.h"
 
-#define LFS_BLOCK_SIZE  10*512 //lower amount of blocks, faster lookahead allocation
+#define LFS_BLOCK_SIZE  512 //lower amount of blocks, faster lookahead allocation
 #define LFS_READ_SIZE   512
 #define LFS_PROG_SIZE   512
 #define LFS_CACHE_SIZE  512
@@ -133,7 +133,6 @@ public:
     void dir_rewind(lfs_dir_t *dir);
 
     lfs_t _lfs; // The actual file system
-    lfs_file_t workfile; //filebuffer
     lfs_workbuffer asyncBuffer;
     char namebuffer[128];
 
@@ -148,6 +147,7 @@ public:
     virtual bool notified();
     bool _mounted = false;
     bool _opened = false;
+    bool busy = false;
     int _err = 0;
 
     uint8_t curOperation = 0; //0: idle, 1: mounting, 2: formatting, 3: writing, 4: reading
@@ -175,7 +175,6 @@ private:
 
     //file handling object
     uint8_t fileBuf[LFS_CACHE_SIZE];
-    const struct lfs_file_config workfile_cfg = {.buffer=fileBuf};
 };
 
 

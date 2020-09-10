@@ -47,9 +47,7 @@ LittleFS::LittleFS(SDCard *bd, lfs_size_t read_size, lfs_size_t prog_size,
     , _block_size(block_size)
     , _lookahead(lookahead)
 {
-    workfile.cfg = &workfile_cfg;
     asyncBuffer._lfs = &_lfs;
-    asyncBuffer.workfile = &workfile;
     asyncBuffer.workpath = namebuffer;
 //    if (bd) {
 //        mount(bd);
@@ -90,18 +88,31 @@ void LittleFS::TaskRun(){
 
         uint8_t curTaskPointer = (taskQuePointer-tasksInQue)<0 ? ((taskQuePointer-tasksInQue)%MAX_TASKS+MAX_TASKS)%MAX_TASKS : (taskQuePointer-tasksInQue)%MAX_TASKS;
         curTask = taskQue[curTaskPointer];
+        asyncBuffer.bufferFile = asyncBuffer.workfile;
         tasksInQue--;
 
+        int Taskerr;
         switch(curTask->taskOperation){
         case FileSystemOperation::Mount:
             //todo
             break;
+        case FileSystemOperation::Open:
+            asyncBuffer.workfile = curTask->taskFile;
+            Taskerr = this->file_open_async(curTask->taskNameBuf, curTask->taskFlags);
+            break;
         case FileSystemOperation::OWC:
-            this->file_open_write_close_async(curTask->taskNameBuf, curTask->taskFlags, curTask->taskArray, curTask->taskSize);
+            asyncBuffer.workfile = curTask->taskFile;
+            Taskerr = this->file_open_write_close_async(curTask->taskNameBuf, curTask->taskFlags, curTask->taskArray, curTask->taskSize);
             break;
         default:
             Console::log("TODO!!");
             break;
+        }
+        Console::log("Operation set to: %d", curOperation);
+        if(Taskerr){
+            Console::log("Task Error");
+            curTask->taskResult = Taskerr;
+            curTask->taskCompleted = true;
         }
     }
 
@@ -130,7 +141,7 @@ void LittleFS::TaskRun(){
     case FileSystemOperation::Open:
         //Case 3: Opening File
         Console::log("OpenState: %d", asyncBuffer.operationState);
-        err = lfs_file_open_async(&_lfs, &workfile, asyncBuffer.workpath, asyncBuffer.workflags, &asyncBuffer, &asyncBuffer.operationState);
+        err = lfs_file_open_async(&_lfs, asyncBuffer.workfile, asyncBuffer.workpath, asyncBuffer.workflags, &asyncBuffer, &asyncBuffer.operationState);
         if(err){
             Console::log("Opening Error: -%d", -err);
             asyncBuffer.operationState = 0;
@@ -151,8 +162,8 @@ void LittleFS::TaskRun(){
         break;
     case FileSystemOperation::OWC:
         //Case 4 5 6: Open Write Close
-        Console::log("OpenState: %d", asyncBuffer.operationState);
-        err = lfs_file_open_async(&_lfs, &workfile, asyncBuffer.workpath, asyncBuffer.workflags, &asyncBuffer, &asyncBuffer.operationState);
+//        Console::log("OpenState: %d", asyncBuffer.operationState);
+        err = lfs_file_open_async(&_lfs, asyncBuffer.workfile, asyncBuffer.workpath, asyncBuffer.workflags, &asyncBuffer, &asyncBuffer.operationState);
         if(err){
             Console::log("Opening Error: -%d", -err);
             asyncBuffer.operationState = 0;
@@ -172,7 +183,7 @@ void LittleFS::TaskRun(){
     case FileSystemOperation::Write:
         //Case 4 5 6: Open Write Close
         //Console::log("WriteState: %d", asyncBuffer.operationState);
-        err = lfs_file_write_async(&_lfs, &workfile, writeBuffer, writeSize, &asyncBuffer, &asyncBuffer.operationState);
+        err = lfs_file_write_async(&_lfs, asyncBuffer.workfile, writeBuffer, writeSize, &asyncBuffer, &asyncBuffer.operationState);
         if(err < 0){
             Console::log("Writing Error: -%d", -err);
             asyncBuffer.operationState = 0;
@@ -189,7 +200,7 @@ void LittleFS::TaskRun(){
         }
         break;
     case FileSystemOperation::Close:
-        err = file_close(&workfile);
+        err = file_close(asyncBuffer.workfile);
         if(err){
             Console::log("Close Error: -%d", -err);
             asyncBuffer.operationState = 0;
@@ -205,7 +216,7 @@ void LittleFS::TaskRun(){
         }
         break;
     default:
-        Console::log("Unknown Operation!");
+        Console::log("Unknown Operation! : %d", curOperation);
         curOperation = 0;
         break;
     }
@@ -445,7 +456,7 @@ int LittleFS::statvfs(const char *name, statvfs_t *st)
 
 int LittleFS::file_open_async(char *path, int flags)
 {
-    if (workfile.flags & LFS_F_OPENED) {
+    if (asyncBuffer.workfile->flags & LFS_F_OPENED) {
         return LFS_ERR_OPEN;
     }
     if(_mounted){
@@ -464,7 +475,7 @@ int LittleFS::file_open_async(char *path, int flags)
 
 int LittleFS::file_open_write_close_async(char *path, int flags, const void *buffer, size_t size)
 {
-    if (workfile.flags & LFS_F_OPENED) {
+    if (asyncBuffer.workfile->flags & LFS_F_OPENED) {
         return LFS_ERR_OPEN;
     }
     if(_mounted){
